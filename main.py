@@ -1,136 +1,113 @@
 """Battery Energy Storage Optimisation Platform — entry point.
 
-Runs the full hierarchical control pipeline:
-  1. Load (or generate) electricity price data
-  2. Solve the day-ahead EMS economic optimisation
-  3. Run closed-loop MPC simulation tracking the EMS schedule
+Runs the full hierarchical nonlinear control pipeline:
+  1. Initialise all parameter dataclasses
+  2. Generate stochastic price scenarios
+  3. Run multi-rate simulation  (EMS + MPC + EKF + MHE)
   4. Visualise and report results
 """
+
+from __future__ import annotations
 
 import logging
 import pathlib
 import sys
-
-import numpy as np
 
 # Ensure project root is importable regardless of working directory
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from config import BatteryParams, EMSParams, MPCParams, SimParams
-from optimization.ems_optimizer import EMSOptimizer
-from simulation.simulate import run_simulation
+from config.parameters import (
+    BatteryParams,
+    EKFParams,
+    EMSParams,
+    MHEParams,
+    MPCParams,
+    TimeParams,
+)
+from data.price_generator import PriceGenerator
+from simulation.simulator import MultiRateSimulator
 from visualization.plot_results import plot_results
 
 # ---------------------------------------------------------------------------
-# Logging
+#  Logging
 # ---------------------------------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
+    format="%(asctime)s  %(name)-24s  %(levelname)-8s  %(message)s",
     datefmt="%H:%M:%S",
+    stream=sys.stdout,
 )
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Price data
+#  Main
 # ---------------------------------------------------------------------------
-def load_prices(csv_path: pathlib.Path, n_hours: int = 48) -> np.ndarray:
-    """Load electricity prices from CSV, falling back to synthetic data.
 
-    Parameters
-    ----------
-    csv_path : pathlib.Path
-        Path to the prices CSV (columns: ``hour, price_usd_per_kwh``).
-    n_hours : int
-        Number of hours to generate if the file is missing.
-
-    Returns
-    -------
-    np.ndarray
-        Price vector [$/kWh].
-    """
-    if csv_path.exists():
-        data = np.genfromtxt(csv_path, delimiter=",", skip_header=1)
-        prices = data[:, 1]
-        logger.info("Loaded %d price samples from %s", len(prices), csv_path)
-        return prices
-
-    logger.info("Price file not found — generating synthetic prices")
-    return _generate_synthetic_prices(n_hours)
-
-
-def _generate_synthetic_prices(n_hours: int) -> np.ndarray:
-    """Generate realistic day-ahead electricity spot prices [$/kWh].
-
-    The synthetic profile combines:
-      - a base cost
-      - a sinusoidal daily cycle (solar depression at night)
-      - Gaussian morning and evening demand peaks
-      - small random perturbations
-    """
-    rng = np.random.default_rng(seed=42)
-    t = np.arange(n_hours, dtype=float)
-
-    base    = 0.050
-    daily   = 0.025 * np.sin(2.0 * np.pi * (t - 6.0) / 24.0)
-    evening = 0.040 * np.exp(-0.5 * ((t % 24 - 18.0) / 2.0) ** 2)
-    morning = 0.015 * np.exp(-0.5 * ((t % 24 - 8.0) / 1.5) ** 2)
-    noise   = rng.normal(0.0, 0.004, n_hours)
-
-    return np.maximum(base + daily + evening + morning + noise, 0.005)
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 def main() -> None:
+    """Orchestrate the hierarchical BESS control simulation."""
     # ---- Configuration ----
     bp = BatteryParams()
+    tp = TimeParams()
     ep = EMSParams()
     mp = MPCParams()
-    sp = SimParams()
+    ekf_p = EKFParams()
+    mhe_p = MHEParams()
 
+    logger.info("=" * 62)
+    logger.info("  BESS HIERARCHICAL CONTROL PLATFORM")
+    logger.info("=" * 62)
+    logger.info("  Battery:    %d kWh / %d kW", bp.E_nom_kwh, bp.P_max_kw)
+    logger.info("  SOC range:  [%.2f, %.2f]", bp.SOC_min, bp.SOC_max)
+    logger.info("  SOH init:   %.4f", bp.SOH_init)
+    logger.info("  alpha_deg:  %.2e  [1/(kW*s)]", bp.alpha_deg)
+    logger.info("  dt_ems:     %d s", tp.dt_ems)
+    logger.info("  dt_mpc:     %d s", tp.dt_mpc)
+    logger.info("  dt_sim:     %d s", tp.dt_sim)
+    logger.info("  Sim hours:  %d h", tp.sim_hours)
+    logger.info("  EMS:  N=%d  scenarios=%d", ep.N_ems, ep.n_scenarios)
+    logger.info("  MPC:  N=%d  Nc=%d", mp.N_mpc, mp.Nc_mpc)
+    logger.info("  MHE:  N=%d", mhe_p.N_mhe)
+    logger.info("=" * 62)
+
+    # ---- Price scenarios ----
+    # Need sim_hours + N_ems hours of lookahead for the last EMS solve
+    n_hours_total = int(tp.sim_hours) + ep.N_ems
+    price_gen = PriceGenerator(seed=42)
+    energy_scen, reg_scen, probs = price_gen.generate_scenarios(
+        n_hours=n_hours_total,
+        n_scenarios=ep.n_scenarios,
+    )
     logger.info(
-        "Battery: %.0f kWh / %.0f kW  |  EMS horizon: %d h  |  "
-        "MPC horizon: %d steps",
-        bp.E_max_kwh, bp.P_max_kw, ep.horizon, mp.horizon,
+        "Price scenarios generated: %d scenarios x %d hours",
+        energy_scen.shape[0],
+        energy_scen.shape[1],
     )
 
-    # ---- Load prices ----
-    price_path = PROJECT_ROOT / "data" / "prices.csv"
-    prices = load_prices(price_path, n_hours=ep.horizon + 24)
-
-    # ---- EMS economic optimisation ----
-    logger.info("Solving EMS economic optimisation …")
-    ems = EMSOptimizer(bp, ep)
-    ems_result = ems.solve(prices[:ep.horizon], bp.SOC_init)
-    logger.info("EMS expected profit: $%.2f", ems_result["profit"])
-
-    # ---- Closed-loop MPC simulation ----
-    logger.info("Running closed-loop MPC simulation …")
-    sim_result = run_simulation(bp, mp, sp, ems_result, prices)
-    logger.info("Actual simulation profit: $%.2f", sim_result["profit"])
+    # ---- Multi-rate simulation ----
+    simulator = MultiRateSimulator(bp, tp, ep, mp, ekf_p, mhe_p)
+    results = simulator.run(energy_scen, reg_scen, probs)
 
     # ---- Visualisation ----
-    fig_path = str(PROJECT_ROOT / "results.png")
-    plot_results(sim_result, ems_result, prices[:sp.n_steps], bp,
-                 save_path=fig_path)
+    plot_results(results, bp, save_path="results.png")
 
     # ---- Summary ----
     print()
     print("=" * 62)
-    print("  BATTERY ENERGY STORAGE OPTIMISATION — RESULTS SUMMARY")
+    print("  RESULTS SUMMARY")
     print("=" * 62)
-    print(f"  Battery capacity:          {bp.E_max_kwh:.0f} kWh / {bp.P_max_kw:.0f} kW")
-    print(f"  Simulation horizon:        {sp.n_steps} hours")
-    print(f"  EMS expected profit:       ${ems_result['profit']:>8.2f}")
-    print(f"  MPC simulation profit:     ${sim_result['profit']:>8.2f}")
-    gap = abs(ems_result["profit"] - sim_result["profit"])
-    print(f"  Tracking gap:              ${gap:>8.2f}")
-    print(f"  Final SOC:                 {sim_result['soc'][-1]:.3f}")
+    print(f"  Battery:          {bp.E_nom_kwh:.0f} kWh / {bp.P_max_kw:.0f} kW")
+    print(f"  Simulation:       {tp.sim_hours:.0f} hours")
+    print(f"  Total profit:     ${results['total_profit']:.2f}")
+    print(f"  SOH degradation:  {results['soh_degradation']*100:.4f}%")
+    print(f"  Final SOC:        {results['soc_true'][-1]:.4f}")
+    print(f"  Final SOH:        {results['soh_true'][-1]:.6f}")
+    print(f"  EKF final SOC:    {results['soc_ekf'][-1]:.4f}")
+    print(f"  EKF final SOH:    {results['soh_ekf'][-1]:.6f}")
+    print(f"  MHE final SOC:    {results['soc_mhe'][-1]:.4f}")
+    print(f"  MHE final SOH:    {results['soh_mhe'][-1]:.6f}")
     print("=" * 62)
 
 

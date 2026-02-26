@@ -1,102 +1,230 @@
-"""Result visualisation for the Battery Optimisation Platform.
+"""Six-panel result visualisation for the hierarchical BESS platform.
 
-Generates a four-panel summary figure:
-  1. State of charge — MPC actual vs. EMS reference
-  2. Battery power   — MPC actual vs. EMS reference
-  3. Electricity spot price
-  4. Cumulative arbitrage profit
+Panel layout (3 rows x 2 columns)
+----------------------------------
+  [1] SOC: true vs EKF vs MHE       |  [2] SOH: true vs EKF vs MHE
+  [3] Power dispatch (MPC + EMS)     |  [4] Energy & regulation prices
+  [5] Cumulative profit breakdown    |  [6] SOH degradation over time
+
+Design notes
+------------
+- Large fonts and thick lines for readability in presentations.
+- MPC applied power and EMS reference power overlaid in one panel
+  so the viewer can judge tracking quality at a glance.
+- Market prices plotted alongside so energy-market professionals
+  can correlate dispatch decisions with price signals.
 """
+
+from __future__ import annotations
 
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.ticker import AutoMinorLocator
 
-from config import BatteryParams
+from config.parameters import BatteryParams
+
+
+# ---------------------------------------------------------------------------
+#  Global style constants
+# ---------------------------------------------------------------------------
+_TITLE_SIZE = 16
+_SUPTITLE_SIZE = 18
+_LABEL_SIZE = 13
+_TICK_SIZE = 11
+_LEGEND_SIZE = 10
+_LW_TRUE = 2.0          # true / primary curves
+_LW_EST = 1.5           # estimator curves
+_LW_REF = 2.5           # EMS reference (step)
+_LW_MPC = 1.0           # MPC applied (dense, thinner)
+_ALPHA_REF = 0.45        # transparency for reference step lines
 
 
 def plot_results(
     sim: dict,
-    ems: dict,
-    prices: np.ndarray,
     bp: BatteryParams,
     save_path: str = "results.png",
 ) -> None:
-    """Generate and save the four-panel summary figure.
+    """Generate the six-panel summary figure.
 
     Parameters
     ----------
     sim : dict
-        Closed-loop simulation results (from ``run_simulation``).
-    ems : dict
-        EMS optimiser output (from ``EMSOptimizer.solve``).
-    prices : np.ndarray
-        Electricity prices used in the simulation [$/kWh].
+        Output from ``MultiRateSimulator.run()``.
     bp : BatteryParams
-        Battery parameters (for axis limits and labels).
     save_path : str
-        Output file path for the saved figure.
+        File path for the saved figure.
     """
-    t_sim  = sim["time"]
-    t_ctrl = t_sim[:-1]                                  # power time axis
-    t_price = np.arange(len(prices)) * bp.dt_hours
+    plt.rcParams.update({
+        "font.size": _TICK_SIZE,
+        "axes.titlesize": _TITLE_SIZE,
+        "axes.labelsize": _LABEL_SIZE,
+        "xtick.labelsize": _TICK_SIZE,
+        "ytick.labelsize": _TICK_SIZE,
+        "legend.fontsize": _LEGEND_SIZE,
+    })
 
-    N_ems = len(ems["P_ref"])
-    t_ems_ctrl = np.arange(N_ems) * bp.dt_hours
-    t_ems_soc  = np.arange(len(ems["SOC_ref"])) * bp.dt_hours
-
-    fig, axes = plt.subplots(4, 1, figsize=(13, 10), sharex=True)
+    fig, axes = plt.subplots(3, 2, figsize=(20, 16))
     fig.suptitle(
-        "Battery Energy Storage Optimisation — Hierarchical Control Results",
-        fontsize=13,
+        "Hierarchical BESS Control \u2014 24 h Multi-Rate Simulation",
+        fontsize=_SUPTITLE_SIZE,
         fontweight="bold",
-        y=0.98,
+        y=0.995,
     )
 
-    # ---- Panel 1: State of Charge ----
-    ax = axes[0]
-    ax.plot(t_sim, sim["soc"], "b-", lw=2, label="MPC (actual)")
-    ax.plot(t_ems_soc, ems["SOC_ref"], "r--", lw=1.5, label="EMS (reference)")
-    ax.axhline(bp.SOC_min, color="0.5", ls=":", lw=0.8, label="SOC limits")
-    ax.axhline(bp.SOC_max, color="0.5", ls=":", lw=0.8)
-    ax.fill_between(t_sim, bp.SOC_min, bp.SOC_max, alpha=0.05, color="green")
-    ax.set_ylabel("SOC [–]")
-    ax.set_ylim(0.0, 1.0)
-    ax.legend(loc="upper right", fontsize=8)
-    ax.set_title("State of Charge", fontsize=10)
+    t_sim_h = sim["time_sim"] / 3600.0           # plant time in hours
+    t_mpc_h = sim["time_mpc"] / 3600.0           # estimator / MPC time in hours
 
-    # ---- Panel 2: Power ----
-    ax = axes[1]
-    ax.step(t_ctrl, sim["power"], "b-", lw=2, where="post",
-            label="MPC (actual)")
-    ax.step(t_ems_ctrl, ems["P_ref"], "r--", lw=1.5, where="post",
-            label="EMS (reference)")
-    ax.axhline(0, color="k", lw=0.5)
+    # ==================================================================
+    #  Panel 1 — SOC: true vs EKF vs MHE
+    # ==================================================================
+    ax = axes[0, 0]
+    ax.plot(t_sim_h, sim["soc_true"], color="0.35", linewidth=_LW_TRUE,
+            label="True SOC")
+    ax.plot(t_mpc_h, sim["soc_ekf"], color="tab:blue", linewidth=_LW_EST,
+            label="EKF estimate")
+    ax.plot(t_mpc_h, sim["soc_mhe"], color="tab:red", linewidth=_LW_EST,
+            linestyle="--", label="MHE estimate")
+    ax.axhspan(bp.SOC_min, bp.SOC_max, alpha=0.08, color="green",
+               label=f"SOC limits [{bp.SOC_min:.0%}\u2013{bp.SOC_max:.0%}]")
+    ax.set_ylabel("SOC [-]")
+    ax.set_ylim(-0.02, 1.02)
+    ax.legend(loc="upper right")
+    ax.set_title("State of Charge Estimation")
+    ax.xaxis.set_minor_locator(AutoMinorLocator())
+    ax.grid(True, alpha=0.3)
+
+    # ==================================================================
+    #  Panel 2 — SOH: true vs EKF vs MHE
+    # ==================================================================
+    ax = axes[0, 1]
+    ax.plot(t_sim_h, sim["soh_true"], color="0.35", linewidth=_LW_TRUE,
+            label="True SOH")
+    ax.plot(t_mpc_h, sim["soh_ekf"], color="tab:blue", linewidth=_LW_EST,
+            label="EKF estimate")
+    ax.plot(t_mpc_h, sim["soh_mhe"], color="tab:red", linewidth=_LW_EST,
+            linestyle="--", label="MHE estimate")
+    ax.set_ylabel("SOH [-]")
+    ax.legend(loc="lower left")
+    ax.set_title("State of Health Estimation")
+    ax.xaxis.set_minor_locator(AutoMinorLocator())
+    ax.grid(True, alpha=0.3)
+
+    # ==================================================================
+    #  Panel 3 — Combined power: MPC applied + EMS reference
+    # ==================================================================
+    ax = axes[1, 0]
+    n_mpc = len(sim["power_applied"])
+    dt_mpc_s = sim["time_mpc"][1] - sim["time_mpc"][0] if len(sim["time_mpc"]) > 1 else 60.0
+    t_pow = np.arange(n_mpc) * dt_mpc_s / 3600.0
+
+    # MPC applied power (solid, thinner — high-frequency detail)
+    ax.step(t_pow, sim["power_applied"][:, 0], where="post",
+            color="tab:green", linewidth=_LW_MPC, label="P_chg applied")
+    ax.step(t_pow, sim["power_applied"][:, 1], where="post",
+            color="tab:blue", linewidth=_LW_MPC, label="P_dis applied")
+    ax.step(t_pow, sim["power_applied"][:, 2], where="post",
+            color="tab:orange", linewidth=_LW_MPC, label="P_reg applied")
+
+    # EMS hourly references (thick, transparent step — the plan)
+    ems_p_chg = sim.get("ems_p_chg_refs", [])
+    ems_p_dis = sim.get("ems_p_dis_refs", [])
+    ems_p_reg = sim.get("ems_p_reg_refs", [])
+
+    if ems_p_chg:
+        # Stitch all hourly EMS solves into one time series
+        all_chg, all_dis, all_reg = [], [], []
+        for pc, pd, pr in zip(ems_p_chg, ems_p_dis, ems_p_reg):
+            all_chg.append(pc[0])    # only the first-stage (applied) value
+            all_dis.append(pd[0])
+            all_reg.append(pr[0])
+        t_ems_h = np.arange(len(all_chg))
+
+        ax.step(t_ems_h, all_chg, where="post",
+                color="tab:green", linewidth=_LW_REF, alpha=_ALPHA_REF,
+                linestyle="-", label="P_chg EMS ref")
+        ax.step(t_ems_h, all_dis, where="post",
+                color="tab:blue", linewidth=_LW_REF, alpha=_ALPHA_REF,
+                linestyle="-", label="P_dis EMS ref")
+        ax.step(t_ems_h, all_reg, where="post",
+                color="tab:orange", linewidth=_LW_REF, alpha=_ALPHA_REF,
+                linestyle="-", label="P_reg EMS ref")
+
+    ax.axhline(0, color="k", linewidth=0.4)
     ax.set_ylabel("Power [kW]")
-    ax.legend(loc="upper right", fontsize=8)
-    ax.set_title("Battery Power  (positive = discharge to grid)", fontsize=10)
+    ax.set_xlabel("Time [h]")
+    ax.legend(loc="upper right", ncol=2)
+    ax.set_title("Power Dispatch: MPC Tracking vs EMS Reference")
+    ax.xaxis.set_minor_locator(AutoMinorLocator())
+    ax.grid(True, alpha=0.3)
 
-    # ---- Panel 3: Electricity Price ----
-    ax = axes[2]
-    ax.step(t_price, prices, color="seagreen", lw=1.8, where="post")
-    ax.set_ylabel("Price [$/kWh]")
-    ax.set_title("Electricity Spot Price", fontsize=10)
+    # ==================================================================
+    #  Panel 4 — Energy and regulation prices
+    # ==================================================================
+    ax = axes[1, 1]
+    prices_e = sim.get("prices_energy", None)
+    prices_r = sim.get("prices_reg", None)
 
-    # ---- Panel 4: Cumulative Profit ----
-    ax = axes[3]
-    ax.plot(t_ctrl, sim["cumulative_profit"], "m-", lw=2)
-    ax.set_ylabel("Cumulative Profit [$]")
-    ax.set_xlabel("Time [hours]")
+    if prices_e is not None:
+        n_price_hours = min(len(prices_e), int(t_sim_h[-1]) + 1)
+        t_price = np.arange(n_price_hours)
+        ax.step(t_price, prices_e[:n_price_hours], where="post",
+                color="tab:blue", linewidth=_LW_TRUE, label="Energy price [$/kWh]")
+    if prices_r is not None:
+        n_price_hours = min(len(prices_r), int(t_sim_h[-1]) + 1)
+        t_price = np.arange(n_price_hours)
+        ax.step(t_price, prices_r[:n_price_hours], where="post",
+                color="tab:orange", linewidth=_LW_TRUE,
+                linestyle="--", label="Regulation price [$/kW/h]")
+
+    ax.set_ylabel("Price [$/kWh or $/kW/h]")
+    ax.set_xlabel("Time [h]")
+    ax.legend(loc="upper right")
+    ax.set_title("Market Prices (Scenario 1)")
+    ax.xaxis.set_minor_locator(AutoMinorLocator())
+    ax.grid(True, alpha=0.3)
+
+    # ==================================================================
+    #  Panel 5 — Cumulative profit breakdown
+    # ==================================================================
+    ax = axes[2, 0]
+    n_prof = len(sim["cumulative_profit"])
+    t_prof = np.arange(n_prof) * dt_mpc_s / 3600.0
+
+    cum_energy = np.cumsum(sim["energy_profit"])
+    cum_reg = np.cumsum(sim["reg_profit"])
+    cum_deg = np.cumsum(sim["deg_cost"])
+
+    ax.plot(t_prof, cum_energy, color="tab:blue", linewidth=_LW_EST,
+            label="Energy arbitrage")
+    ax.plot(t_prof, cum_reg, color="tab:orange", linewidth=_LW_EST,
+            label="Regulation revenue")
+    ax.plot(t_prof, -cum_deg, color="tab:red", linewidth=_LW_EST,
+            label="Degradation cost")
+    ax.plot(t_prof, sim["cumulative_profit"], color="k", linewidth=_LW_TRUE,
+            label=f"Net profit (${sim['total_profit']:.2f})")
+    ax.axhline(0, color="k", linewidth=0.4, linestyle=":")
+    ax.set_ylabel("Cumulative [$]")
+    ax.set_xlabel("Time [h]")
+    ax.legend(loc="upper left")
+    ax.set_title("Revenue Breakdown")
+    ax.xaxis.set_minor_locator(AutoMinorLocator())
+    ax.grid(True, alpha=0.3)
+
+    # ==================================================================
+    #  Panel 6 — Degradation tracking
+    # ==================================================================
+    ax = axes[2, 1]
+    soh_loss = (sim["soh_true"][0] - sim["soh_true"]) * 100  # percent
+    ax.plot(t_sim_h, soh_loss, color="tab:purple", linewidth=_LW_TRUE)
+    ax.set_ylabel("SOH Loss [%]")
+    ax.set_xlabel("Time [h]")
     ax.set_title(
-        f"Cumulative Profit  (total: ${sim['profit']:.2f})", fontsize=10,
+        f"Battery Degradation (total: {sim['soh_degradation']*100:.4f}%)"
     )
+    ax.xaxis.set_minor_locator(AutoMinorLocator())
+    ax.grid(True, alpha=0.3)
 
-    # ---- Formatting (all panels) ----
-    for ax in axes:
-        ax.grid(True, alpha=0.25)
-        ax.xaxis.set_minor_locator(AutoMinorLocator())
-        ax.yaxis.set_minor_locator(AutoMinorLocator())
-
-    plt.tight_layout(rect=[0, 0, 1, 0.96])
-    plt.savefig(save_path, dpi=150, bbox_inches="tight")
-    print(f"Figure saved → {save_path}")
+    plt.tight_layout()
+    fig.savefig(save_path, dpi=180, bbox_inches="tight")
     plt.close(fig)
+    print(f"Results saved to {save_path}")
