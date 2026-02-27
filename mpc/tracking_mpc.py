@@ -92,6 +92,8 @@ class TrackingMPC:
         p_chg_ref_p = opti.parameter(N)
         p_dis_ref_p = opti.parameter(N)
         p_reg_ref_p = opti.parameter(N)
+        # Previously applied control (for first-move smoothness)
+        u_prev_p = opti.parameter(3)
 
         # ---- Initial conditions ----
         opti.subject_to(SOC[0] == soc_0)
@@ -122,8 +124,16 @@ class TrackingMPC:
                 + (P_reg[j] - p_reg_ref_p[k]) ** 2
             )
 
-            # Rate-of-change penalty (only for free control steps, k >= 1)
-            if 0 < k < Nc:
+            # Rate-of-change penalty
+            if k == 0:
+                # First move: penalise jump from previously applied control
+                cost += mp.R_delta * (
+                    (P_chg[0] - u_prev_p[0]) ** 2
+                    + (P_dis[0] - u_prev_p[1]) ** 2
+                    + (P_reg[0] - u_prev_p[2]) ** 2
+                )
+            elif k < Nc:
+                # Subsequent free control steps
                 cost += mp.R_delta * (
                     (P_chg[k] - P_chg[k - 1]) ** 2
                     + (P_dis[k] - P_dis[k - 1]) ** 2
@@ -183,6 +193,7 @@ class TrackingMPC:
         self._p_chg_ref_p = p_chg_ref_p
         self._p_dis_ref_p = p_dis_ref_p
         self._p_reg_ref_p = p_reg_ref_p
+        self._u_prev_p = u_prev_p
 
     # ------------------------------------------------------------------
     #  Solve
@@ -196,6 +207,7 @@ class TrackingMPC:
         p_chg_ref: np.ndarray,
         p_dis_ref: np.ndarray,
         p_reg_ref: np.ndarray,
+        u_prev: np.ndarray | None = None,
     ) -> np.ndarray:
         """Compute the MPC control action.
 
@@ -207,6 +219,10 @@ class TrackingMPC:
         p_chg_ref : ndarray (N,)
         p_dis_ref : ndarray (N,)
         p_reg_ref : ndarray (N,)
+        u_prev    : ndarray (3,) or None
+            Previously applied control [P_chg, P_dis, P_reg].
+            Used for first-move rate-of-change penalty.
+            If None, defaults to the current power references.
 
         Returns
         -------
@@ -227,6 +243,10 @@ class TrackingMPC:
         soc_0_val = float(np.clip(x_est[0], self.bp.SOC_min, self.bp.SOC_max))
         soh_0_val = float(np.clip(x_est[1], 0.5, 1.0))
 
+        # Default u_prev to current references if not provided
+        if u_prev is None:
+            u_prev = np.array([p_chg_ref[0], p_dis_ref[0], p_reg_ref[0]])
+
         # Set parameters
         opti.set_value(self._soc_0, soc_0_val)
         opti.set_value(self._soh_0, soh_0_val)
@@ -235,6 +255,7 @@ class TrackingMPC:
         opti.set_value(self._p_chg_ref_p, p_chg_ref)
         opti.set_value(self._p_dis_ref_p, p_dis_ref)
         opti.set_value(self._p_reg_ref_p, p_reg_ref)
+        opti.set_value(self._u_prev_p, u_prev)
 
         # Warm-start from previous solution
         if self._prev_P_chg is not None:

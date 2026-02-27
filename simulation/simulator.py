@@ -262,18 +262,48 @@ class MultiRateSimulator:
                 ems_p_reg_refs.append(ems_result["P_reg_ref"].copy())
                 ems_soc_refs.append(ems_result["SOC_ref"].copy())
 
+                # Save old power reference endpoint before overwriting.
+                # Used for short blend at the EMS boundary to smooth
+                # the power reference transition (avoids MPC spikes).
+                if ems_hour > 0:
+                    off = min(mpc_ref_base, len(p_chg_ref_mpc_local) - 1)
+                    prev_p_chg_end = float(p_chg_ref_mpc_local[off])
+                    prev_p_dis_end = float(p_dis_ref_mpc_local[off])
+                    prev_p_reg_end = float(p_reg_ref_mpc_local[off])
+
                 # Interpolate to MPC resolution
                 refs = interpolate_ems_to_mpc(ems_result, tp.dt_ems, tp.dt_mpc)
 
                 # Compute how many MPC steps remain in this EMS window
                 mpc_ref_base = 0
-                mpc_steps_in_ems = int(tp.dt_ems / tp.dt_mpc) * remaining_hours
 
                 soc_ref_mpc_local = refs["SOC_ref_mpc"]
                 soh_ref_mpc_local = refs["SOH_ref_mpc"]
                 p_chg_ref_mpc_local = refs["P_chg_ref_mpc"]
                 p_dis_ref_mpc_local = refs["P_dis_ref_mpc"]
                 p_reg_ref_mpc_local = refs["P_reg_ref_mpc"]
+
+                # Short blend: ramp power references from the old plan's
+                # endpoint to the new plan over n_blend_steps.  State
+                # references (SOC/SOH) are already smooth from linear
+                # interpolation and don't need blending.  Beyond the
+                # blend region the MPC sees the full new plan, including
+                # the fresh terminal target — critical for Q_terminal.
+                if ems_hour > 0:
+                    Nb = min(self.mp.n_blend_steps, len(p_chg_ref_mpc_local))
+                    alpha = np.linspace(1.0 / (Nb + 1), 1.0, Nb)
+                    p_chg_ref_mpc_local[:Nb] = (
+                        (1.0 - alpha) * prev_p_chg_end
+                        + alpha * p_chg_ref_mpc_local[:Nb]
+                    )
+                    p_dis_ref_mpc_local[:Nb] = (
+                        (1.0 - alpha) * prev_p_dis_end
+                        + alpha * p_dis_ref_mpc_local[:Nb]
+                    )
+                    p_reg_ref_mpc_local[:Nb] = (
+                        (1.0 - alpha) * prev_p_reg_end
+                        + alpha * p_reg_ref_mpc_local[:Nb]
+                    )
 
             # ===========================================================
             #  MPC + Estimation update  (every dt_mpc = 60 s)
@@ -314,6 +344,7 @@ class MultiRateSimulator:
                     p_chg_ref=pc_win,
                     p_dis_ref=pd_win,
                     p_reg_ref=pr_win,
+                    u_prev=u_current,
                 )
 
                 # Log applied power

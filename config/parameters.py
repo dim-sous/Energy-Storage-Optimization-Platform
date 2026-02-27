@@ -70,13 +70,14 @@ class MPCParams:
     """Tuning parameters for the nonlinear tracking MPC."""
 
     N_mpc: int = 60                    # Prediction horizon  [steps at dt_mpc]
-    Nc_mpc: int = 10                   # Control horizon  [steps at dt_mpc]
+    Nc_mpc: int = 20                   # Control horizon  [steps at dt_mpc]
     Q_soc: float = 1e4                 # SOC tracking weight
     Q_soh: float = 1e2                 # SOH tracking weight
     R_power: float = 1.0               # Power reference tracking weight (per input)
     R_delta: float = 10.0              # Control rate-of-change penalty
     Q_terminal: float = 1e5            # Terminal SOC penalty
     slack_penalty: float = 1e6         # Soft SOC constraint violation penalty
+    n_blend_steps: int = 5             # EMS boundary reference smoothing  [MPC steps]
 
 
 @dataclass(frozen=True)
