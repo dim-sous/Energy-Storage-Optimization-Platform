@@ -122,8 +122,9 @@ v3_pack_model/
 │   └── simulator.py          # Accepts PackParams; logs cell-level arrays + balancing power
 ├── visualization/
 │   └── plot_results.py       # 4x2 layout: pack + cell SOCs, cell temps, balancing, profit
-└── data/
-    └── price_generator.py    # Unchanged from v2
+├── data/
+│   └── price_generator.py    # Unchanged from v2
+└── stress_test.py            # 10-test stress suite with pack-specific tests
 ```
 
 ## Running
@@ -132,10 +133,32 @@ v3_pack_model/
 # From repository root
 uv run python v3_pack_model/main.py
 
+# Run stress tests
+uv run python v3_pack_model/stress_test.py
+
 # Compare with v1 and v2
 uv run python -m comparison.process_results
 uv run python -m comparison.compare_versions
 ```
+
+## Stress Tests
+
+10 tests covering extreme conditions + pack-specific scenarios (all PASS):
+
+| # | Test | Key Finding |
+|---|------|-------------|
+| 1 | Max power cycling (100 kW, 4h) | T_max=28.3°C |
+| 2 | High ambient (40°C) | Arrhenius ratio 1.47x |
+| 3 | SOC boundary saturation | Clamps correctly |
+| 4 | Rapid power reversals | T_max=27.4°C |
+| 5 | Thermal decay to ambient | Matches analytical |
+| 6 | EKF convergence from bad init | Error 0.0158 → 0.0010 |
+| 7 | MPC temperature constraint | Safe fallback at T_max |
+| 8 | Cell imbalance recovery (±10%) | Spread reduced 72% in 2h |
+| 9 | Balancing saturation | Stable under extreme variation |
+| 10 | Weakest-cell degradation | Pack SOH = min cell SOH correctly |
+
+Results plotted to `results/v3_pack_model_stress_tests.png`.
 
 ## Results vs v1/v2
 

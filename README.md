@@ -140,57 +140,45 @@ The inner loop (1 s) applies the most recent MPC command to the plant model. Eve
 
 ```
 battery_optimization_platform/
-├── main.py                        # Entry point — runs the base (latest) pipeline
 ├── pyproject.toml                 # Dependencies: casadi, numpy, matplotlib, scipy
-│
-├── config/                        # Base platform configuration
-│   └── parameters.py              #   All tunable parameters (frozen dataclasses)
-├── models/
-│   └── battery_model.py           #   2-state nonlinear model (CasADi + numpy plant)
-├── ems/
-│   └── economic_ems.py            #   Stochastic energy management system
-├── mpc/
-│   └── tracking_mpc.py            #   Nonlinear tracking MPC with control blocking
-├── estimation/
-│   ├── ekf.py                     #   Extended Kalman Filter
-│   └── mhe.py                     #   Moving Horizon Estimation
-├── simulation/
-│   └── simulator.py               #   Multi-rate simulation coordinator
-├── data/
-│   ├── price_generator.py         #   Stochastic price scenario generator
-│   └── prices.csv                 #   Historical price data
-├── visualization/
-│   └── plot_results.py            #   Result figure generation
 │
 ├── v1_baseline/                   # Version 1: frozen baseline (2-state, timing instrumented)
 │   ├── main.py                    #   Independent entry point
-│   └── ...                        #   Self-contained copy of all modules
+│   ├── config/parameters.py       #   All tunable parameters (frozen dataclasses)
+│   ├── models/battery_model.py    #   2-state nonlinear model (CasADi + numpy plant)
+│   ├── ems/economic_ems.py        #   Stochastic energy management system
+│   ├── mpc/tracking_mpc.py        #   Nonlinear tracking MPC with control blocking
+│   ├── estimation/{ekf,mhe}.py    #   EKF + MHE state estimators
+│   ├── simulation/simulator.py    #   Multi-rate simulation coordinator
+│   ├── visualization/plot_results.py
+│   └── data/price_generator.py    #   Stochastic price scenario generator
 │
 ├── v2_thermal_model/              # Version 2: 3-state thermal model upgrade
-│   ├── main.py                    #   Independent entry point
-│   └── ...                        #   Adds temperature state, Arrhenius degradation
+│   ├── main.py                    #   Adds temperature state, Arrhenius degradation
+│   ├── stress_test.py             #   8-test stress suite with plots
+│   └── ...                        #   Same module structure as v1
 │
 ├── v3_pack_model/                 # Version 3: multi-cell pack with active balancing
-│   ├── main.py                    #   Independent entry point
-│   └── ...                        #   N-cell BatteryPack wrapping BatteryPlant instances
+│   ├── main.py                    #   N-cell BatteryPack wrapping BatteryPlant instances
+│   ├── stress_test.py             #   10-test stress suite with pack-specific tests
+│   └── ...                        #   Same module structure as v2 + PackParams
 │
 ├── comparison/                    # Cross-version comparison infrastructure
 │   ├── metrics.py                 #   Metric computation from simulation results
 │   ├── process_results.py         #   Load .npz files and produce metrics JSON
 │   └── compare_versions.py        #   Side-by-side table, CSV, and bar chart
 │
+├── backlog.md                     # Gate review reports (validation, evaluation, stress tests)
+│
 └── results/                       # Simulation outputs (auto-generated)
-    ├── v1_baseline_results.npz    #   Raw time series
-    ├── v1_baseline_metrics.json   #   Computed metrics
-    ├── v2_thermal_model_results.npz
-    ├── v2_thermal_model_metrics.json
-    ├── v3_pack_model_results.npz
-    ├── v3_pack_model_metrics.json
+    ├── v*_results.npz             #   Raw time series per version
+    ├── v*_metrics.json            #   Computed metrics per version
+    ├── v*_stress_tests.png        #   Stress test visualizations
     ├── version_comparison.csv     #   All versions side-by-side
     └── version_comparison.png     #   Comparison bar charts
 ```
 
-Each base subfolder contains its own `README.md` with full mathematical formulations.
+Each version is fully self-contained with its own `README.md` documenting the mathematical formulations and changes from its predecessor.
 
 ---
 
@@ -207,14 +195,6 @@ Each base subfolder contains its own `README.md` with full mathematical formulat
 cd battery_optimization_platform
 uv sync
 ```
-
-Run the base platform:
-
-```bash
-uv run python main.py
-```
-
-### Running Individual Versions
 
 Each version is independently runnable from the repository root:
 
@@ -284,7 +264,7 @@ The platform generates a 6-panel figure showing:
 
 ## Configuration
 
-All parameters are organized into frozen dataclasses in `config/parameters.py`. Key settings:
+All parameters are organized into frozen dataclasses in each version's `config/parameters.py`. Key settings:
 
 ### Battery
 

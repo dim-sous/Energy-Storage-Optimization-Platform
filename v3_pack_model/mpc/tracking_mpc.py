@@ -319,7 +319,10 @@ class TrackingMPC:
 
         except RuntimeError as exc:
             logger.warning("MPC solver failed: %s", str(exc)[:200])
-            u_cmd = np.array([p_chg_ref[0], p_dis_ref[0], p_reg_ref[0]])
+            # Safe fallback: zero power (do not apply reference when solver
+            # fails — it may have failed precisely because thermal or SOC
+            # constraints make the reference infeasible).
+            u_cmd = np.zeros(3)
 
         return u_cmd
 

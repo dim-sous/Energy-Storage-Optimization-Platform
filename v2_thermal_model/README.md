@@ -87,8 +87,9 @@ v2_thermal_model/
 │   └── simulator.py          # Multi-rate coordinator logging temperature traces
 ├── visualization/
 │   └── plot_results.py       # 6-panel layout including temperature panel
-└── data/
-    └── price_generator.py    # Unchanged from v1
+├── data/
+│   └── price_generator.py    # Unchanged from v1
+└── stress_test.py            # 8-test stress suite with plots
 ```
 
 ## Running
@@ -97,10 +98,30 @@ v2_thermal_model/
 # From repository root
 uv run python v2_thermal_model/main.py
 
+# Run stress tests
+uv run python v2_thermal_model/stress_test.py
+
 # Compare with v1
 uv run python -m comparison.process_results
 uv run python -m comparison.compare_versions
 ```
+
+## Stress Tests
+
+8 tests covering extreme conditions (all PASS):
+
+| # | Test | Key Finding |
+|---|------|-------------|
+| 1 | Max power cycling (100 kW, 4h) | T_max=28.1°C |
+| 2 | High ambient (40°C) | Arrhenius ratio 1.47x |
+| 3 | Low ambient (0°C) | Temperature stable |
+| 4 | SOC boundary saturation | Clamps correctly |
+| 5 | Rapid power reversals | T_max=27.2°C |
+| 6 | Thermal decay to ambient | Matches analytical |
+| 7 | EKF convergence from bad init | Error 0.0095 → 0.0012 |
+| 8 | MPC temperature constraint | Safe fallback at T_max |
+
+Results plotted to `results/v2_thermal_model_stress_tests.png`.
 
 ## Results vs v1
 
