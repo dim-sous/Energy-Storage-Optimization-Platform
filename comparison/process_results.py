@@ -78,7 +78,19 @@ def main() -> None:
         if results is None:
             continue
 
-        metrics = compute_all_metrics(results, tag)
+        # Determine dt_sim from saved scalars, or infer from array lengths.
+        # v1-v3 use dt_sim=1 s; v4+ use dt_sim=5 s.
+        dt_sim = float(results.get("dt_sim", 0.0))
+        if dt_sim <= 0:
+            # Infer: soc_true length = sim_hours * 3600 / dt_sim + 1
+            n_soc = len(results.get("soc_true", []))
+            sim_hours = float(results.get("sim_hours", 24))
+            if n_soc > 1:
+                dt_sim = sim_hours * 3600.0 / (n_soc - 1)
+            else:
+                dt_sim = 1.0
+
+        metrics = compute_all_metrics(results, tag, dt_sim=dt_sim)
         metrics_path = RESULTS_DIR / f"{tag}_metrics.json"
         save_metrics(metrics, metrics_path)
 

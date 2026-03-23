@@ -1,183 +1,159 @@
-# v3_pack_model — Multi-Cell Battery Pack with Active Cell Balancing
+# v4_electrical_rc_model — 2RC Equivalent Circuit with NMC OCV Polynomial
 
-Extends the v2 thermal model from a single lumped battery to a **multi-cell pack** of N cells in series, each with unique physical parameters drawn from manufacturing tolerances. An active proportional cell balancing controller equalises SOC across cells. EMS, MPC, EKF, and MHE remain pack-level (3-state) — they see aggregated pack states while the BMS handles cell balancing transparently, creating realistic model mismatch.
+Extends the 3-state thermal model to a **5-state model** by adding two RC voltage states:
 
-## What Changed from v2
+    x = [SOC, SOH, T, V_rc1, V_rc2]
 
-| Component | v2_thermal_model | v3_pack_model |
-|-----------|-----------------|---------------|
-| **Plant** | Single `BatteryPlant` | `BatteryPack` wrapping N `BatteryPlant` instances |
-| **Parameters** | Homogeneous | Per-cell variation (capacity, resistance, degradation, initial SOC) |
-| **Balancing** | None | Active proportional controller per cell |
-| **Optimizer model** | Matches plant exactly | Pack-level 3-state (model mismatch vs multi-cell plant) |
-| **Visualization** | 6-panel (3x2) | 8-panel (4x2) with cell-level SOC, temperature, and balancing plots |
-| **Metrics** | 16 standard metrics | 16 standard + 6 cell-level metrics |
+Terminal voltage `V_term = OCV(SOC) - V_rc1 - V_rc2 - I*R0` is now explicitly modeled and measured, providing a new observation channel for state estimation via voltage feedback.
 
-**Unchanged**: EMS, MPC, EKF, MHE, price generation — all remain pack-level 3-state. Optimizer dimensions and solve times are identical to v2.
+## What Changed from v3
 
-## Multi-Cell Pack Architecture
+| Component | v3_pack_model | v4_electrical_rc_model |
+|-----------|--------------|----------------------|
+| **State vector** | 3 states: `[SOC, SOH, T]` | 5 states: `[SOC, SOH, T, V_rc1, V_rc2]` |
+| **Measurements** | 2: `[SOC, T]` | 3: `[SOC, T, V_term]` |
+| **Electrical model** | Simple `I = P/V_nom` | 2RC circuit with OCV polynomial + quadratic current solve |
+| **OCV** | Not modeled | 7th-order NMC polynomial: 3.0 V (SOC=0) to 4.19 V (SOC=1) |
+| **Voltage constraints** | None | Soft V_term constraints in MPC (V_min_pack, V_max_pack) |
+| **EKF** | 3-state, 2-measurement | 5-state, 3-measurement (nonlinear H via OCV) |
+| **MHE** | 3-state, 2-measurement | 5-state, 3-measurement with V_rc process weights |
+| **MPC** | 3-state | 3-state (V_rc omitted for tractability — see design note) |
+| **Plant** | `BatteryPack` with simple current | `BatteryPack` with 2RC dynamics per cell |
+| **Visualization** | 4x2 layout | 2x2 layout: SOC, voltage, SOH+RC, power+price |
+| **Simulation dt** | 1 s | 5 s (RK4-stable for tau_min=10 s) |
+| **Stress tests** | 10 tests | 14 tests (adds OCV, RC step response, solver robustness, voltage limits) |
 
-```
-Pack-Level Optimizer (EMS/MPC/EKF/MHE)
-  sees: x_pack = [SOC_mean, SOH_min, T_max]
-        u_pack = [P_chg, P_dis, P_reg]
-                    │
-                    ▼
-┌──────────────────────────────────┐
-│         BatteryPack (BMS)        │
-│                                  │
-│  Power split: P_cell_i = P/N    │
-│  + Balancing:  P_bal_i           │
-│                                  │
-│  ┌────────┐ ┌────────┐          │
-│  │ Cell 1 │ │ Cell 2 │  ...     │
-│  │E=51.2kW│ │E=48.8kW│          │
-│  │R=2.3mΩ │ │R=2.7mΩ │          │
-│  └────────┘ └────────┘          │
-│                                  │
-│  Aggregation:                    │
-│    SOC = mean(cells)             │
-│    SOH = min(cells)              │
-│    T   = max(cells)              │
-└──────────────────────────────────┘
-```
+**Unchanged**: EMS (3-state hourly planning), pack architecture (4 cells, active balancing), price generation.
 
-## Per-Cell Parameter Scaling
-
-For N cells in series, pack parameters are divided equally then perturbed:
-
-| Parameter | Per-cell formula | Variation |
-|-----------|-----------------|-----------|
-| `E_nom_cell` | `E_nom_pack / N * (1 +/- spread)` | +/-3% capacity |
-| `P_max_cell` | `P_max_pack / N` | No variation |
-| `R_cell` | `R_pack / N * (1 +/- spread)` | +/-8% resistance |
-| `C_th_cell` | `C_th_pack / N` | No variation |
-| `h_cool_cell` | `h_cool_pack / N` | No variation |
-| `V_cell` | `V_pack / N` | No variation |
-| `alpha_cell` | `alpha_pack * (1 +/- spread)` | +/-5% degradation |
-| `SOC_init_cell` | `SOC_init +/- spread` | +/-2% initial SOC |
-
-**Physical consistency**: Series cells carry identical current. `I_cell = (P_pack/N * 1000) / (V_pack/N) = P_pack * 1000 / V_pack = I_pack`. All dynamics remain self-consistent.
-
-## Active Cell Balancing
-
-A proportional controller redistributes power between cells to equalise SOC:
+## 2RC Equivalent Circuit Model
 
 ```
-P_bal_i = gain * (SOC_avg - SOC_i)
+    I (>0 discharge)
+    ─────┬───[R0]───┬───[R1]───┬───[R2]───┬─────
+         │          │    ║     │    ║     │
+         │          │   [C1]   │   [C2]   │
+       V_term       │    ║     │    ║     │
+         │          └──────────┘──────────┘
+    ─────┴─────────────────────────────────┴─────
+                         OCV(SOC)
 
-  clipped to [-max_balancing_power, +max_balancing_power] per cell
-  then zero-sum enforced: bal -= mean(bal)  (energy conservation)
+V_term = OCV(SOC) - V_rc1 - V_rc2 - I * R0
 
-Application:
-  P_bal_i > 0  →  added to cell's charge power
-  P_bal_i < 0  →  added to cell's discharge power
+RC dynamics:
+  dV_rc1/dt = -V_rc1 / tau_1  +  I / C1    (fast transient,  tau_1 = 10 s)
+  dV_rc2/dt = -V_rc2 / tau_2  +  I / C2    (slow diffusion,  tau_2 = 400 s)
 ```
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| `balancing_gain` | 50.0 | Proportional gain [kW / unit SOC error] |
-| `max_balancing_power` | 1.0 kW | Max per-cell balancing power |
-| `balancing_enabled` | True | Enable/disable balancing |
+| `R0` | 0.005 Ohm | Series resistance (pack-level) |
+| `R1` | 0.003 Ohm | Charge-transfer resistance |
+| `tau_1` | 10 s | Fast time constant (C1 = 3333 F) |
+| `R2` | 0.002 Ohm | Diffusion resistance |
+| `tau_2` | 400 s | Slow time constant (C2 = 200000 F) |
+| `R_total` | 0.010 Ohm | R0 + R1 + R2 (matches v3 R_internal) |
 
-With 4 cells and default gain, the controller reduces initial 2.4% SOC spread to ~0.2% in steady state.
+## NMC OCV Polynomial
 
-## Pack-Level Aggregation
+7th-order polynomial fitted to NMC cell data, evaluated via Horner's method:
 
-The `BatteryPack` presents the same interface as `BatteryPlant` using these aggregation rules:
+```
+OCV_cell(SOC) = a0 + a1*SOC + a2*SOC^2 + ... + a7*SOC^7
+```
 
-| Pack state | Formula | Rationale |
-|------------|---------|-----------|
-| `SOC_pack` | `mean(cell SOCs)` | Most representative for pack energy content |
-| `SOH_pack` | `min(cell SOHs)` | Industry-standard weakest-link; pack is only as healthy as its worst cell |
-| `T_pack` | `max(cell temps)` | Thermal safety; hottest cell determines thermal limit |
+Range: ~3.0 V (SOC=0) to ~4.19 V (SOC=1), monotonically increasing.
 
-## Model Mismatch
+Pack-level OCV: `OCV_pack(SOC) = n_series_cells * n_modules * OCV_cell(SOC)`, where `n_series_cells=54` and `n_modules=4` (216 cells total, ~800 V nominal).
 
-This version intentionally introduces **realistic model mismatch**:
+## Current Computation
 
-- The optimizer (EMS/MPC) uses a single-cell 3-state model with nominal pack parameters
-- The plant is a multi-cell pack with per-cell variation and balancing dynamics
-- The estimators (EKF/MHE) see pack-aggregated measurements, not individual cells
+Current is derived from a quadratic equation (power = voltage x current):
 
-This creates the kind of mismatch seen in real BESS installations where the control system uses a simplified pack model while each cell behaves slightly differently.
+```
+R0 * I^2 - V_oc_eff * I + P_net * 1000 = 0
+
+where V_oc_eff = OCV(SOC) - V_rc1 - V_rc2
+      P_net = P_dis - P_chg  [kW]
+```
+
+The physically meaningful root (smaller |I|) is selected. Falls back to `I = P_net*1000 / V_oc_eff` when the discriminant is negative.
+
+## Hierarchical Estimation-Control Separation
+
+A key design decision in v4:
+
+- **EKF/MHE** use the full **5-state** model — the voltage measurement provides additional SOC observability through the OCV curve slope
+- **MPC/EMS** use a **3-state** model (SOC, SOH, T) — V_rc dynamics are omitted because their effect on control is negligible (V_rc1_max = I*R1 = 0.375 V at rated current, ~0.05% of pack voltage)
+
+This is standard hierarchical estimation-control separation: the estimator uses all available measurements for accuracy, while the controller uses a reduced model for tractability.
+
+## Pack Voltage Limits
+
+| Parameter | Value | Derivation |
+|-----------|-------|------------|
+| `V_min_pack` | 604.8 V | 2.8 V/cell x 54 cells x 4 modules |
+| `V_max_pack` | 918.0 V | 4.25 V/cell x 54 cells x 4 modules |
+
+Enforced as soft constraints in MPC with penalty weight `slack_penalty_volt = 1e5`.
 
 ## Module Structure
 
 ```
-v3_pack_model/
-├── main.py                   # Entry point: VERSION_TAG="v3_pack_model"
+v4_electrical_rc_model/
+├── main.py                   # Entry point: VERSION_TAG="v4_electrical_rc_model"
 ├── config/
-│   └── parameters.py         # All v2 params + PackParams (n_cells, spreads, balancing)
+│   └── parameters.py         # All v3 params + ElectricalParams (2RC, OCV, voltage limits)
 ├── models/
-│   └── battery_model.py      # v2 dynamics + BatteryPack class wrapping N BatteryPlants
+│   └── battery_model.py      # 5-state CasADi + numpy dynamics, OCV polynomial, quadratic solver
 ├── ems/
-│   └── economic_ems.py       # Unchanged from v2 (pack-level 3-state)
+│   └── economic_ems.py       # 3-state hourly planning (unchanged from v3)
 ├── mpc/
-│   └── tracking_mpc.py       # Unchanged from v2 (pack-level 3-state)
+│   └── tracking_mpc.py       # 3-state MPC with OCV-based current + soft voltage constraints
 ├── estimation/
-│   ├── ekf.py                # Unchanged from v2 (pack-level 3-state)
-│   └── mhe.py                # Unchanged from v2 (pack-level 3-state)
+│   ├── ekf.py                # 5-state, 3-measurement EKF (nonlinear H via OCV)
+│   └── mhe.py                # 5-state, 3-measurement MHE with V_rc process weights
 ├── simulation/
-│   └── simulator.py          # Accepts PackParams; logs cell-level arrays + balancing power
+│   └── simulator.py          # Multi-rate coordinator with 2RC pack plant
 ├── visualization/
-│   └── plot_results.py       # 4x2 layout: pack + cell SOCs, cell temps, balancing, profit
+│   └── plot_results.py       # 2x2 layout: SOC, voltage, SOH+RC, power+price
 ├── data/
-│   └── price_generator.py    # Unchanged from v2
-└── stress_test.py            # 10-test stress suite with pack-specific tests
+│   └── price_generator.py    # Unchanged from v3
+└── stress_test.py            # 14-test stress suite with electrical-specific tests
 ```
 
 ## Running
 
 ```bash
 # From repository root
-uv run python v3_pack_model/main.py
+uv run python v4_electrical_rc_model/main.py
 
 # Run stress tests
-uv run python v3_pack_model/stress_test.py
+uv run python v4_electrical_rc_model/stress_test.py
 
-# Compare with v1 and v2
+# Compare with v1, v2, v3
 uv run python -m comparison.process_results
 uv run python -m comparison.compare_versions
 ```
 
 ## Stress Tests
 
-10 tests covering extreme conditions + pack-specific scenarios (all PASS):
+14 tests covering all v3 tests plus 4 new electrical-specific tests:
 
-| # | Test | Key Finding |
-|---|------|-------------|
-| 1 | Max power cycling (100 kW, 4h) | T_max=28.3°C |
-| 2 | High ambient (40°C) | Arrhenius ratio 1.47x |
-| 3 | SOC boundary saturation | Clamps correctly |
-| 4 | Rapid power reversals | T_max=27.4°C |
-| 5 | Thermal decay to ambient | Matches analytical |
-| 6 | EKF convergence from bad init | Error 0.0158 → 0.0010 |
-| 7 | MPC temperature constraint | Safe fallback at T_max |
-| 8 | Cell imbalance recovery (±10%) | Spread reduced 72% in 2h |
-| 9 | Balancing saturation | Stable under extreme variation |
-| 10 | Weakest-cell degradation | Pack SOH = min cell SOH correctly |
+| # | Test | Category |
+|---|------|----------|
+| 1 | Max power continuous cycling (100 kW, 4h) | Thermal + electrical |
+| 2 | High ambient temperature (40 degC) | Arrhenius coupling |
+| 3 | SOC boundary saturation | SOC limits |
+| 4 | Rapid power reversals (60s cycle) | Transient response |
+| 5 | Thermal decay to ambient | Thermal dynamics |
+| 6 | EKF convergence from bad initial estimate (5-state) | Estimation |
+| 7 | MPC temperature constraint enforcement | Control safety |
+| 8 | Cell imbalance recovery (large initial SOC spread) | Pack balancing |
+| 9 | Balancing saturation (extreme cell variation) | Pack balancing |
+| 10 | Weakest-cell degradation | Pack degradation |
+| 11 | OCV monotonicity verification | **New** — electrical |
+| 12 | RC step response (tau_1 and tau_2 settling) | **New** — electrical |
+| 13 | Quadratic solver robustness (extreme inputs) | **New** — electrical |
+| 14 | Voltage at SOC extremes (V_term within pack limits) | **New** — electrical |
 
-Results plotted to `results/v3_pack_model_stress_tests.png`.
-
-## Results vs v1/v2
-
-| Metric | v1_baseline | v2_thermal_model | v3_pack_model |
-|--------|------------|-----------------|---------------|
-| Total profit | $35.33 | $35.23 | $35.20 |
-| SOH degradation | 0.972% | 1.001% | 0.261% |
-| Max temperature | -- | 27.8 degC | 28.0 degC |
-| Avg MPC solve | 61 ms | 114 ms | 116 ms |
-| Avg estimator solve | 46 ms | 79 ms | 80 ms |
-
-### Cell-Level Metrics (v3 only)
-
-| Metric | Value |
-|--------|-------|
-| Max SOC imbalance | 2.44% (initial, before balancing settles) |
-| Avg SOC imbalance | 0.18% (steady-state with balancing active) |
-| SOH spread (final) | 0.017% across 4 cells |
-| Max temp spread | 0.29 degC between cells |
-| Balancing energy | 2.88 kWh over 24 hours |
-
-Profit is comparable to v2 — slight reduction from balancing energy losses. Solve times are identical since optimizer dimensions are unchanged. Pack-level SOH uses weakest-link (min) aggregation, so the reported degradation differs from the lumped single-cell model in v2. Estimator RMSE increases slightly, reflecting realistic model mismatch between the pack-level optimizer model and the multi-cell plant.
+Results plotted to `results/v4_electrical_rc_model_stress_tests.png`.
