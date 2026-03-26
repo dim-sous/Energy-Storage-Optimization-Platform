@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BESS Optimization — Arpedon for Petrogaz</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+  :root {
+    --bg:#0b0f1a; --card:#111827; --card2:#1a2235; --accent:#3b82f6; --glow:#60a5fa;
+    --green:#10b981; --amber:#f59e0b; --red:#ef4444; --purple:#8b5cf6; --cyan:#06b6d4;
+    --t1:#f1f5f9; --t2:#94a3b8; --dim:#64748b; --brd:#1e293b;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth;scroll-snap-type:y mandatory}
+  body{font-family:'Inter',-apple-system,sans-serif;background:var(--bg);color:var(--t1);-webkit-font-smoothing:antialiased}
+
+  .S{min-height:100vh;width:100%;display:flex;flex-direction:column;justify-content:center;padding:56px 72px;position:relative;scroll-snap-align:start}
+  .S::before{content:'';position:absolute;inset:0;background:radial-gradient(ellipse 70% 50% at 20% 40%,rgba(59,130,246,.05)0,transparent 60%),radial-gradient(ellipse 50% 40% at 80% 70%,rgba(139,92,246,.03)0,transparent 60%);pointer-events:none}
+  .S>*{position:relative;z-index:1}
+  .sn{position:absolute;bottom:24px;right:36px;font-size:11px;color:var(--dim);letter-spacing:2px}
+  .ft{position:absolute;bottom:24px;left:72px;font-size:10px;color:var(--dim);letter-spacing:1px}
+
+  .title{text-align:center;align-items:center}
+  .title::before{background:radial-gradient(ellipse 100% 60% at 50% 40%,rgba(59,130,246,.1)0,transparent 70%)}
+
+  .arpedon-logo{margin-bottom:40px}
+  .arpedon-logo img{height:36px;width:auto}
+
+  h1{font-size:52px;font-weight:800;line-height:1.1;letter-spacing:-2px;max-width:860px;background:linear-gradient(135deg,#f1f5f9 30%,#94a3b8 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+  .sub{font-size:19px;color:var(--t2);margin-top:20px;max-width:680px;line-height:1.6}
+  .dv{width:56px;height:3px;background:linear-gradient(135deg,var(--accent),var(--purple));border-radius:3px;margin:24px auto}
+  .meta{font-size:12px;color:var(--dim);letter-spacing:1px}
+
+  .lb{display:inline-flex;align-items:center;gap:8px;font-size:11px;font-weight:700;letter-spacing:3px;text-transform:uppercase;color:var(--accent);margin-bottom:12px}
+  .lb::before{content:'';width:18px;height:2px;background:var(--accent);border-radius:2px}
+  h2{font-size:40px;font-weight:800;line-height:1.15;letter-spacing:-1.5px;margin-bottom:8px}
+  .desc{font-size:16px;color:var(--t2);line-height:1.6;max-width:660px;margin-bottom:32px}
+
+  .g{display:grid;gap:18px}
+  .g3{grid-template-columns:repeat(3,1fr)}
+  .sp{display:grid;grid-template-columns:1fr 1fr;gap:40px;align-items:start}
+
+  .c{background:var(--card);border:1px solid var(--brd);border-radius:14px;padding:24px}
+  .c h3{font-size:17px;font-weight:700;margin-bottom:6px}
+  .c p{font-size:13px;color:var(--t2);line-height:1.6}
+
+  .ic{width:40px;height:40px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px;margin-bottom:14px;font-weight:700}
+  .ic.am{background:rgba(245,158,11,.15);color:var(--amber)}
+  .ic.rd{background:rgba(239,68,68,.15);color:var(--red)}
+  .ic.pu{background:rgba(139,92,246,.15);color:var(--purple)}
+
+  .kpi{background:var(--card);border:1px solid var(--brd);border-radius:14px;padding:22px;text-align:center}
+  .kv{font-size:36px;font-weight:800;letter-spacing:-1px;line-height:1}
+  .kl{font-size:11px;font-weight:600;color:var(--t2);margin-top:7px;text-transform:uppercase;letter-spacing:1px}
+  .ks{font-size:11px;color:var(--dim);margin-top:3px}
+
+  .hl{border-radius:14px;padding:20px 24px;margin:16px 0}
+  .hl.bl{background:linear-gradient(135deg,rgba(59,130,246,.08),rgba(139,92,246,.04));border:1px solid rgba(59,130,246,.2)}
+  .hl.gr{background:linear-gradient(135deg,rgba(16,185,129,.08),rgba(6,182,212,.04));border:1px solid rgba(16,185,129,.2)}
+  .hl.am{background:linear-gradient(135deg,rgba(245,158,11,.08),rgba(239,68,68,.04));border:1px solid rgba(245,158,11,.2)}
+
+  .tbl{width:100%;border-collapse:separate;border-spacing:0;border-radius:14px;overflow:hidden;border:1px solid var(--brd);background:var(--card)}
+  .tbl th{background:var(--card2);padding:12px 16px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:var(--t2);text-align:left;border-bottom:1px solid var(--brd)}
+  .tbl td{padding:10px 16px;font-size:13px;border-bottom:1px solid rgba(30,41,59,.5)}
+  .tbl tr:last-child td{border-bottom:none}
+  .tg{display:inline-block;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700}
+  .tg.g{background:rgba(16,185,129,.15);color:var(--green)}
+  .tg.r{background:rgba(239,68,68,.15);color:var(--red)}
+
+  .src{font-size:10px;color:var(--dim);margin-top:10px;line-height:1.5}
+  .checks{list-style:none;padding:0}
+  .checks li{font-size:14px;line-height:1.5;padding:5px 0 5px 26px;position:relative;color:var(--t2)}
+  .checks li::before{content:'\2713';position:absolute;left:0;font-weight:800;color:var(--green)}
+
+  .plotly-chart{border-radius:12px;overflow:hidden;border:1px solid var(--brd)}
+
+  @media print{.S{page-break-after:always}body{print-color-adjust:exact;-webkit-print-color-adjust:exact}}
+  @media(max-width:1100px){.S{padding:32px 36px}h1{font-size:38px}h2{font-size:30px}.g3{grid-template-columns:1fr 1fr}.sp{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+
+<!-- ═══════ SLIDE 1 — TITLE ═══════ -->
+<section class="S title">
+  <div class="arpedon-logo">
+    <img src="https://arpedon.com/assets/images/logo/logo.svg" alt="Arpedon" style="height:36px;filter:brightness(1.5)">
+  </div>
+  <h1>Battery Storage<br>Optimization Platform</h1>
+  <p class="sub">Intelligent dispatch for grid-scale battery storage.</p>
+  <div class="dv"></div>
+  <p class="meta">Prepared for Petrogaz &middot; March 2026 &middot; Confidential</p>
+</section>
+
+<!-- ═══════ SLIDE 2 — THE PROBLEM ═══════ -->
+<section class="S">
+  <div class="lb">The Challenge</div>
+  <h2>Battery Storage Needs a Brain</h2>
+  <p class="desc">Simple dispatch rules leave money on the table — and wear down the asset invisibly.</p>
+  <div class="g g3">
+    <div class="c"><div class="ic am">1</div><h3>Volatile Markets</h3><p>European energy prices swing from negative to &euro;170+/MWh within hours. A static strategy can't keep up.</p></div>
+    <div class="c"><div class="ic rd">2</div><h3>Hidden Wear</h3><p>Every charge/discharge cycle degrades the cells. Without tracking, operators unknowingly shorten their asset's life.</p></div>
+    <div class="c"><div class="ic pu">3</div><h3>Wasted Capacity</h3><p>Without knowing the battery's true internal state, operators must keep wide safety margins — leaving usable capacity idle.</p></div>
+  </div>
+  <div class="ft">Arpedon &middot; Confidential</div><div class="sn">02</div>
+</section>
+
+<!-- ═══════ SLIDE 3 — SOLUTION ═══════ -->
+<section class="S">
+  <div class="lb">Our Approach</div>
+  <h2>A Digital Twin That Sees,<br>Thinks, and Protects</h2>
+  <p class="desc">Three layers: plan ahead, execute in real time, monitor health.</p>
+  <div style="display:flex;align-items:center;justify-content:center;gap:0;margin:20px 0;flex-wrap:wrap">
+    <div class="c" style="text-align:center;min-width:180px;flex:1;max-width:210px"><div style="font-size:22px;margin-bottom:6px">&#x1F4C8;</div><div style="font-size:12px;font-weight:700;color:var(--glow)">Market Prices</div><div style="font-size:10px;color:var(--dim);margin-top:3px">Real day-ahead + FCR</div></div>
+    <div style="font-size:22px;color:var(--dim);padding:0 5px">&#x27A1;</div>
+    <div class="c" style="text-align:center;min-width:180px;flex:1;max-width:210px;border-color:rgba(59,130,246,.3)"><div style="font-size:22px;margin-bottom:6px">&#x1F3AF;</div><div style="font-size:12px;font-weight:700;color:var(--glow)">24h Scheduler</div><div style="font-size:10px;color:var(--dim);margin-top:3px">Plans optimal dispatch</div></div>
+    <div style="font-size:22px;color:var(--dim);padding:0 5px">&#x27A1;</div>
+    <div class="c" style="text-align:center;min-width:180px;flex:1;max-width:210px;border-color:rgba(59,130,246,.3)"><div style="font-size:22px;margin-bottom:6px">&#x26A1;</div><div style="font-size:12px;font-weight:700;color:var(--glow)">Real-Time Controller</div><div style="font-size:10px;color:var(--dim);margin-top:3px">Adjusts every 5 min</div></div>
+    <div style="font-size:22px;color:var(--dim);padding:0 5px">&#x27A1;</div>
+    <div class="c" style="text-align:center;min-width:180px;flex:1;max-width:210px"><div style="font-size:22px;margin-bottom:6px">&#x1F50B;</div><div style="font-size:12px;font-weight:700;color:var(--green)">Battery Pack</div><div style="font-size:10px;color:var(--dim);margin-top:3px">Multi-cell w/ balancing</div></div>
+  </div>
+  <div class="hl bl"><div style="font-size:13px;color:var(--t2);line-height:1.7"><strong style="color:var(--t1)">Key insight:</strong> It won't chase a trade that costs more in wear than it earns in revenue.</div></div>
+  <div class="ft">Arpedon &middot; Confidential</div><div class="sn">03</div>
+</section>
+
+<!-- ═══════ SLIDE 4 — A REAL DAY ═══════ -->
+<section class="S">
+  <div class="lb">How It Works</div>
+  <h2>A Real Day on the German Market</h2>
+  <p class="desc">One 24h window from Q1 2024. The optimizer charges when cheap, discharges when expensive, and stops when the spread doesn't justify the wear.</p>
+  <div id="chart-day" class="plotly-chart" style="height:420px"></div>
+  <div class="src">Real EPEX SPOT day-ahead prices, DE-LU zone, January 2024. Simulated on calibrated 200 kWh / 100 kW system. Net profit this day: &euro;10.46.</div>
+  <div class="ft">Arpedon &middot; Confidential</div><div class="sn">05</div>
+</section>
+
+<!-- ═══════ SLIDE 6 — VALIDATION (Plotly charts) ═══════ -->
+<section class="S">
+  <div class="lb">84-Day Monte Carlo</div>
+  <h2>Every Day of Q1 2024, Simulated</h2>
+  <p class="desc">84 days of Q1 2024. Both strategies compared net of battery wear.</p>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+    <div id="chart-sorted" class="plotly-chart" style="height:340px"></div>
+    <div id="chart-cumul" class="plotly-chart" style="height:340px"></div>
+  </div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-top:16px">
+    <div class="c" style="padding:14px 16px;border-color:rgba(16,185,129,.3)">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <span style="font-size:11px;font-weight:700;color:var(--green)">Zero downside</span>
+        <span style="font-size:20px;font-weight:800;color:var(--green)">0 / 84</span>
+      </div>
+      <div id="spark-loss" style="height:50px;margin-top:4px"></div>
+      <div style="font-size:10px;color:var(--dim);margin-top:2px">loss days &middot; baseline loses 6</div>
+    </div>
+    <div class="c" style="padding:14px 16px;border-color:rgba(16,185,129,.3)">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <span style="font-size:11px;font-weight:700;color:var(--green)">Cumulative edge</span>
+        <span style="font-size:20px;font-weight:800;color:var(--green)">+&euro;75</span>
+      </div>
+      <div id="spark-adv" style="height:50px;margin-top:4px"></div>
+      <div style="font-size:10px;color:var(--dim);margin-top:2px">over 84 days, net of all wear</div>
+    </div>
+    <div class="c" style="padding:14px 16px;border-color:rgba(16,185,129,.3)">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <span style="font-size:11px;font-weight:700;color:var(--green)">Wear-aware</span>
+        <span style="font-size:20px;font-weight:800;color:var(--green)">0.82%<span style="font-size:10px;color:var(--dim)">/yr</span></span>
+      </div>
+      <div id="spark-wear" style="height:50px;margin-top:4px"></div>
+      <div style="font-size:10px;color:var(--dim);margin-top:2px">tracked &amp; optimized &middot; baseline: uncontrolled</div>
+    </div>
+  </div>
+
+  <div class="src" style="margin-top:10px"><strong>Data:</strong> EPEX SPOT DE-LU + SMARD FCR (Q1 2024) &middot; Samsung SDI 94Ah NMC &middot; Schmalstieg et al. 2014.</div>
+  <div class="ft">Arpedon &middot; Confidential</div><div class="sn">04</div>
+</section>
+
+<!-- ═══════ SLIDE 6 — ECONOMICS ═══════ -->
+<section class="S">
+  <div class="lb">Economics</div>
+  <h2>At Real Project Scale</h2>
+  <p class="desc">Validated on 200 kWh. Real projects are 50–250&times; larger. All figures net of degradation.</p>
+  <div class="g g3">
+    <div class="c" style="text-align:center"><div style="font-size:11px;font-weight:700;letter-spacing:2px;color:var(--dim);margin-bottom:12px">1 MWh SYSTEM</div><div class="kv" style="font-size:40px;color:var(--glow)">&euro;15K</div><div style="font-size:12px;color:var(--t2);margin-top:4px">net per year</div><div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--brd)"><div style="font-size:10px;color:var(--dim)">Battery degradation</div><div style="font-size:14px;font-weight:700;color:var(--green)">0.82% / year</div></div></div>
+    <div class="c" style="text-align:center;border-color:rgba(59,130,246,.3)"><div style="font-size:11px;font-weight:700;letter-spacing:2px;color:var(--glow);margin-bottom:12px">10 MWh SYSTEM</div><div class="kv" style="font-size:40px;color:var(--glow)">&euro;146K</div><div style="font-size:12px;color:var(--t2);margin-top:4px">net per year</div><div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--brd)"><div style="font-size:10px;color:var(--dim)">Battery life extension</div><div style="font-size:14px;font-weight:700;color:var(--green)">+2–3 extra years</div></div></div>
+    <div class="c" style="text-align:center"><div style="font-size:11px;font-weight:700;letter-spacing:2px;color:var(--amber);margin-bottom:12px">50 MWh SYSTEM</div><div class="kv" style="font-size:40px;color:var(--amber)">&euro;732K</div><div style="font-size:12px;color:var(--t2);margin-top:4px">net per year</div><div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--brd)"><div style="font-size:10px;color:var(--dim)">Revenue stacking potential</div><div style="font-size:14px;font-weight:700;color:var(--green)">+aFRR, +intraday</div></div></div>
+  </div>
+  <div class="hl am" style="margin-top:20px"><div style="display:flex;align-items:center;gap:14px"><div style="font-size:24px">&#x1F4A1;</div><div style="font-size:13px;color:var(--t2);line-height:1.6"><strong style="color:var(--amber)">Conservative.</strong> Only day-ahead + FCR included. aFRR, intraday, and peak shaving would add more.</div></div></div>
+  <div class="ft">Arpedon &middot; Confidential</div><div class="sn">06</div>
+</section>
+
+<!-- ═══════ SLIDE 7 — SAFETY ═══════ -->
+<section class="S">
+  <div class="lb">Reliability</div>
+  <h2>Built to Never Fail</h2>
+  <div class="sp">
+    <div>
+      <p class="desc" style="max-width:100%">Every release is stress-tested before advancing.</p>
+      <ul class="checks">
+        <li>Never crashed, never made a bad decision — even on the hardest market days</li>
+        <li>Keeps the pack cool enough to avoid accelerated aging</li>
+        <li>Uses only a third of the annual wear budget — extends asset life by years</li>
+        <li>Prevents the weakest cell from dragging down the whole pack</li>
+        <li>Knows when <em>not</em> to trade — sits out when spreads don't justify the wear</li>
+        <li>Recovers automatically if a sensor gives a bad reading</li>
+      </ul>
+    </div>
+    <div>
+      <div class="kpi" style="padding:28px;margin-bottom:14px"><div class="kv" style="font-size:52px;color:var(--green)">0</div><div class="kl" style="margin-top:8px">Control Failures</div><div class="ks">across 2,880 real-time decisions</div></div>
+      <div class="kpi" style="padding:28px;margin-bottom:14px"><div class="kv" style="font-size:52px;color:var(--glow)">14/14</div><div class="kl" style="margin-top:8px">Stress Tests Passed</div><div class="ks">heat, cold, max power, sensor failure</div></div>
+      <div class="kpi" style="padding:28px"><div class="kv" style="font-size:52px;color:var(--amber)">4</div><div class="kl" style="margin-top:8px">Validated Releases</div><div class="ks">each tested before advancing</div></div>
+    </div>
+  </div>
+  <div class="ft">Arpedon &middot; Confidential</div><div class="sn">07</div>
+</section>
+
+<!-- ═══════ SLIDE 8 — CLOSING ═══════ -->
+<section class="S title" style="background:radial-gradient(ellipse 100% 60% at 50% 50%,rgba(16,185,129,.08)0,transparent 70%),var(--bg)">
+  <div class="arpedon-logo" style="margin-bottom:32px">
+    <img src="https://arpedon.com/assets/images/logo/logo.svg" alt="Arpedon" style="height:36px;filter:brightness(1.5)">
+  </div>
+  <h1 style="font-size:42px;max-width:760px">Validated on Real Data.<br>Ready for Pilot.</h1>
+  <div class="dv" style="background:linear-gradient(135deg,var(--green),var(--cyan))"></div>
+  <div style="display:flex;gap:36px;justify-content:center;margin-top:14px;flex-wrap:wrap">
+    <div style="text-align:center"><div style="font-size:30px;font-weight:800;color:var(--green)">&euro;8.02</div><div style="font-size:11px;color:var(--dim);margin-top:3px">net daily / 200 kWh</div></div>
+    <div style="text-align:center"><div style="font-size:30px;font-weight:800;color:var(--glow)">84 / 84</div><div style="font-size:11px;color:var(--dim);margin-top:3px">profitable days</div></div>
+    <div style="text-align:center"><div style="font-size:30px;font-weight:800;color:var(--amber)">0.82%</div><div style="font-size:11px;color:var(--dim);margin-top:3px">annual degradation</div></div>
+    <div style="text-align:center"><div style="font-size:30px;font-weight:800;color:var(--purple)">&euro;732K</div><div style="font-size:11px;color:var(--dim);margin-top:3px">50 MWh net/year</div></div>
+  </div>
+  <p class="meta" style="margin-top:28px">Confidential &middot; March 2026</p>
+</section>
+
+<!-- ═══════ PLOTLY CHART SCRIPTS ═══════ -->
+<script>
+const dark = {paper_bgcolor:'#111827', plot_bgcolor:'#111827', font:{color:'#94a3b8',family:'Inter'}};
+
+// ─── 84-day Monte Carlo data (EUR, per 200 kWh unit) ───
+const mpc_raw = [5.15,5.43,9.91,15.61,5.65,6.87,5.45,9.84,10.72,10.84,13.6,9.5,3.72,5.88,9.31,11.94,9.62,8.1,7.27,6.52,2.54,8.6,8.77,3.94,11.19,2.96,7.26,4.98,11.51,6.66,6.16,9.35,8.9,4.87,6.27,4.77,13.01,7.37,11.97,9.48,7.18,4.96,5.84,8.65,8.0,5.91,5.25,5.03,8.19,3.86,7.36,4.71,5.83,3.89,9.82,5.85,5.4,5.99,9.45,7.88,6.04,5.21,6.44,5.88,6.33,8.84,8.32,10.64,8.76,12.23,11.31,6.86,8.89,11.38,7.47,9.43,8.36,9.05,6.44,13.13,13.34,17.87,10.41,10.41];
+const base_raw = [8.59,10.85,12.66,18.81,10.22,9.66,9.81,13.02,13.79,14.38,15.06,13.91,-3.85,9.05,11.77,7.31,14.41,5.24,10.49,9.53,4.2,11.0,11.79,8.56,14.54,-2.61,9.72,7.97,14.76,9.11,0.09,11.13,11.13,-0.28,9.7,6.35,10.43,9.78,16.25,6.35,10.16,1.78,8.53,10.34,9.68,8.51,2.3,7.52,10.9,7.67,9.97,-1.97,-0.4,4.48,12.98,9.08,9.33,8.27,11.75,4.86,8.7,8.96,8.96,9.38,9.4,6.93,11.36,12.32,7.09,4.76,11.77,10.53,11.64,14.35,9.45,6.67,10.05,10.99,10.44,16.15,15.24,19.86,13.62,14.12];
+
+// Per-day baseline degradation cost (simulated through real plant model)
+const BASE_DEG_DAILY = [0.54,0.71,0.54,0.54,0.54,0.54,0.54,0.54,0.54,0.52,0.52,0.54,0.5,0.54,0.54,0.71,0.54,0.71,0.54,0.54,0.68,0.54,0.54,0.54,0.54,0.54,0.54,0.54,0.54,0.52,0.54,0.54,0.54,0.54,0.54,0.54,0.54,0.53,0.54,0.71,0.54,0.71,0.54,0.54,0.54,0.54,0.71,0.54,0.54,0.54,0.52,0.54,0.54,0.54,0.54,0.54,0.54,0.52,0.54,0.71,0.54,0.54,0.54,0.54,0.54,0.71,0.54,0.54,0.71,0.54,0.54,0.54,0.54,0.54,0.54,0.71,0.53,0.54,0.54,0.54,0.54,0.54,0.54,0.54];
+// Advantage = optimizer_net - baseline_net (both net of simulated wear)
+const advantage = mpc_raw.map((v,i) => +(v - (base_raw[i] - BASE_DEG_DAILY[i])).toFixed(2));
+const adv_sorted = [...advantage].sort((a,b)=>a-b);
+const x84 = Array.from({length:84},(_,i)=>i+1);
+const colors = adv_sorted.map(v => v >= 0 ? '#10b981' : '#ef4444');
+
+Plotly.newPlot('chart-sorted',[
+  {x:x84, y:adv_sorted, type:'bar',
+   marker:{color:colors, cornerradius:3},
+   hovertemplate:'€%{y:.2f} advantage<extra></extra>'}
+],{
+  ...dark,
+  title:{text:'Optimizer advantage over rule-based (both net of wear) — per day, per 200 kWh',font:{size:11,color:'#f1f5f9'}},
+  xaxis:{title:'84 days of Q1 2024, sorted', gridcolor:'#1e293b', tickfont:{size:9}, titlefont:{size:10}},
+  yaxis:{title:'€ / day', gridcolor:'#1e293b', tickfont:{size:10}, titlefont:{size:11},
+         zeroline:true, zerolinecolor:'#94a3b8', zerolinewidth:1.5},
+  showlegend:false,
+  margin:{t:40, b:44, l:50, r:16}
+},{responsive:true,displayModeBar:false});
+
+// ─── Cumulative profit: optimizer vs baseline (chronological) ───
+const base_net_daily = base_raw.map((v,i) => v - BASE_DEG_DAILY[i]);
+let cum_mpc = [], cum_base = [], sum_m = 0, sum_b = 0;
+for (let i = 0; i < 84; i++) {
+  sum_m += mpc_raw[i]; cum_mpc.push(+sum_m.toFixed(1));
+  sum_b += base_net_daily[i]; cum_base.push(+sum_b.toFixed(1));
+}
+
+Plotly.newPlot('chart-cumul',[
+  {x:x84, y:cum_base, type:'scatter', mode:'lines',
+   name:'Rule-Based',
+   line:{color:'#f59e0b',width:2},
+   fill:'tozeroy', fillcolor:'rgba(245,158,11,0.06)',
+   hovertemplate:'Day %{x}: €%{y:.0f} total<extra>Baseline</extra>'},
+  {x:x84, y:cum_mpc, type:'scatter', mode:'lines',
+   name:'Optimizer',
+   line:{color:'#3b82f6',width:3},
+   fill:'tozeroy', fillcolor:'rgba(59,130,246,0.08)',
+   hovertemplate:'Day %{x}: €%{y:.0f} total<extra>Optimizer</extra>'},
+],{
+  ...dark,
+  title:{text:'Cumulative profit over Q1 2024 (€, net of wear)',font:{size:11,color:'#f1f5f9'}},
+  xaxis:{title:'Day', gridcolor:'#1e293b', tickfont:{size:9}, titlefont:{size:10}},
+  yaxis:{title:'€ cumulative', gridcolor:'#1e293b', tickfont:{size:10}, titlefont:{size:11}},
+  legend:{orientation:'v', y:0.95, x:0.02, font:{size:9}},
+  margin:{t:40, b:44, l:56, r:16}
+},{responsive:true,displayModeBar:false});
+
+// ─── Sparklines for summary cards ───
+const sparkLayout = {
+  ...dark, showlegend:false,
+  xaxis:{visible:false}, yaxis:{visible:false},
+  margin:{t:0,b:0,l:0,r:0}, hovermode:false
+};
+
+// Spark 1: loss days — optimizer (all green) vs baseline losses (red)
+Plotly.newPlot('spark-loss',[
+  {x:x84, y:base_net_daily.map(v=>Math.min(v,0)), type:'bar',
+   marker:{color:'#ef4444'}, width:1.2},
+  {x:x84, y:mpc_raw.map(v=>Math.max(v,0)), type:'bar',
+   marker:{color:'rgba(16,185,129,0.3)'}, width:1.2}
+],{...sparkLayout, barmode:'overlay',
+   yaxis:{visible:false, zeroline:true, zerolinecolor:'#374151', zerolinewidth:1}},
+{responsive:true,displayModeBar:false});
+
+// Spark 2: cumulative advantage (running sum of daily advantage)
+let cum_adv = [], s_adv = 0;
+for (let i = 0; i < 84; i++) { s_adv += advantage[i]; cum_adv.push(+s_adv.toFixed(1)); }
+Plotly.newPlot('spark-adv',[
+  {x:x84, y:cum_adv, type:'scatter', mode:'lines',
+   fill:'tozeroy', line:{color:'#10b981',width:1.5},
+   fillcolor:'rgba(16,185,129,0.15)'}
+],{...sparkLayout, yaxis:{visible:false}},
+{responsive:true,displayModeBar:false});
+
+// Spark 3: wear — optimizer tracked vs baseline uncontrolled (real simulated)
+Plotly.newPlot('spark-wear',[
+  {y:['Optimizer','Rule-Based'], x:[0.82, 0.61], type:'bar', orientation:'h',
+   marker:{color:['#10b981','#64748b'], cornerradius:4},
+   text:['0.82%/yr (tracked)','0.61%/yr (untracked)'], textposition:'inside',
+   textfont:{size:9,color:'#fff'}}
+],{...sparkLayout, xaxis:{visible:false,range:[0,1]},
+   yaxis:{visible:true,tickfont:{size:9,color:'#94a3b8'}},
+   margin:{t:0,b:0,l:60,r:4}},
+{responsive:true,displayModeBar:false});
+
+// ─── Single-day time series (3 subplots) ───
+const t_day=[0,0.5,1,1.5,2,2.5,3,3.5,4,4.5,5,5.5,6,6.5,7,7.5,8,8.5,9,9.5,10,10.5,11,11.5,12,12.5,13,13.5,14,14.5,15,15.5,16,16.5,17,17.5,18,18.5,19,19.5,20,20.5,21,21.5,22,22.5,23,23.5];
+const soc_day=[50.4,50.4,50.3,50.1,48.9,48.4,49.6,51.3,55.7,57.3,60.8,71.7,81.9,86.2,88.9,88.8,85.8,76.9,66.3,62.2,60,58.3,58.6,58.7,58.6,59.3,62.7,65.5,67.3,72.7,80.5,81.8,79.9,77.7,72.2,69.8,58.1,37.6,20.6,14.4,11.1,10.3,10,10,10,10,10,10.1];
+const pwr_day=[0,0.2,0.2,2.6,5.3,-2.8,-6.5,-11.4,-23.2,-8.7,-34,-48.8,-25.6,-13.2,-5.6,6.8,24.2,39.7,28.9,5.7,11.3,-0.1,-0.9,0.1,0,-8.5,-18.3,-7.7,0,-35.6,-17.3,4,8.3,12.6,0,31.3,69.7,73.3,35.8,14.1,6.2,0.9,0.2,-0.1,0,0,0,-1.2];
+const price_day=[81.5,81.5,81.1,81.1,79.9,79.9,78.2,78.2,77,77,81.5,81.5,94.1,94.1,114.8,114.8,144.1,144.1,138.6,138.6,122,122,110,110,103.4,103.4,95,95,96,96,110.2,110.2,111.4,111.4,128.2,128.2,127.3,127.3,111.8,111.8,95.5,95.5,86.2,86.2,82,82,77.7,77.7];
+
+// Color power bars by charge (green) vs discharge (blue)
+const pwr_colors = pwr_day.map(v => v < 0 ? '#10b981' : '#3b82f6');
+
+Plotly.newPlot('chart-day',[
+  // Price (top)
+  {x:t_day, y:price_day, type:'scatter', mode:'lines', name:'Price', fill:'tozeroy',
+   fillcolor:'rgba(245,158,11,0.08)', line:{color:'#f59e0b',width:2},
+   yaxis:'y3', hovertemplate:'%{y:.0f} €/MWh<extra>Price</extra>'},
+  // Power (middle)
+  {x:t_day, y:pwr_day, type:'bar', name:'Power', marker:{color:pwr_colors},
+   yaxis:'y2', hovertemplate:'%{y:.0f} kW<extra>Power</extra>'},
+  // SOC (bottom)
+  {x:t_day, y:soc_day, type:'scatter', mode:'lines', name:'SOC', fill:'tozeroy',
+   fillcolor:'rgba(59,130,246,0.1)', line:{color:'#3b82f6',width:2.5},
+   yaxis:'y', hovertemplate:'%{y:.1f}%<extra>SOC</extra>'}
+],{
+  ...dark,
+  grid:{rows:3, columns:1, subplots:[['xy3'],['xy2'],['xy']], roworder:'top to bottom', ygap:0.08},
+  xaxis:{title:'Hour of day', gridcolor:'#1e293b', tickfont:{size:10}, titlefont:{size:11}, range:[0,24], dtick:4},
+  yaxis3:{title:'€/MWh', gridcolor:'#1e293b', tickfont:{size:9}, titlefont:{size:10,color:'#f59e0b'}, range:[60,160]},
+  yaxis2:{title:'kW', gridcolor:'#1e293b', tickfont:{size:9}, titlefont:{size:10,color:'#3b82f6'}, zeroline:true, zerolinecolor:'#374151'},
+  yaxis:{title:'SOC %', gridcolor:'#1e293b', tickfont:{size:9}, titlefont:{size:10,color:'#3b82f6'}, range:[0,100]},
+  showlegend:false,
+  margin:{t:12,b:40,l:50,r:16},
+  annotations:[
+    {x:8,y:144,text:'<b>Peak: €144/MWh</b>',showarrow:false,font:{size:10,color:'#f59e0b'},yref:'y3',xanchor:'left'},
+    {x:5.5,y:-50,text:'Charging',showarrow:false,font:{size:9,color:'#10b981'},yref:'y2'},
+    {x:18,y:75,text:'Discharging',showarrow:false,font:{size:9,color:'#3b82f6'},yref:'y2'}
+  ]
+},{responsive:true,displayModeBar:false});
+</script>
+
+</body>
+</html>
