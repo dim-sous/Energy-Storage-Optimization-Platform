@@ -25,8 +25,6 @@ Terminal voltage `V_term = OCV(SOC) - V_rc1 - V_rc2 - I*R0` is now explicitly mo
 
 **Unchanged**: Pack architecture (4 cells, active balancing), price generation.
 
-**EMS enhancement**: Regulation delivery feasibility constraints — P_reg is automatically reduced when SOC approaches limits (insufficient headroom for symmetric up/down response). Prevents infeasible capacity commitments and corresponding non-delivery penalties.
-
 ## 2RC Equivalent Circuit Model
 
 ```
