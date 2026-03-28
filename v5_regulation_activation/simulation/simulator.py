@@ -32,7 +32,7 @@ from config.parameters import (
     MHEParams,
     MPCParams,
     PackParams,
-    PIParams,
+    RegControllerParams,
     RegulationParams,
     Strategy,
     ThermalParams,
@@ -44,7 +44,7 @@ from estimation.ekf import ExtendedKalmanFilter
 from estimation.mhe import MovingHorizonEstimator
 from models.battery_model import BatteryPack, BatteryPlant
 from mpc.tracking_mpc import TrackingMPC
-from pi.regulation_pi import RegulationPI
+from pi.regulation_controller import RegulationController
 from revenue.regulation_revenue import (
     RegulationAccounting,
     compute_step_revenue,
@@ -148,7 +148,7 @@ class MultiRateSimulator:
         mhe_p: MHEParams,
         thp: ThermalParams,
         elp: ElectricalParams,
-        pi_p: PIParams,
+        reg_ctrl_p: RegControllerParams,
         reg_p: RegulationParams,
         strategy: Strategy = Strategy.FULL,
         pp: PackParams | None = None,
@@ -160,7 +160,7 @@ class MultiRateSimulator:
         self.mp = mp
         self.thp = thp
         self.elp = elp
-        self.pi_p = pi_p
+        self.reg_ctrl_p = reg_ctrl_p
         self.reg_p = reg_p
         self.strategy = strategy
         self.pp = pp
@@ -177,7 +177,7 @@ class MultiRateSimulator:
         # Controllers (created even if strategy doesn't use them — lightweight)
         self.ems = EconomicEMS(bp, tp, ep, thp, elp)
         self.mpc = TrackingMPC(bp, tp, mp, thp, elp)
-        self.pi = RegulationPI(bp, pi_p, tp.dt_pi)
+        self.reg_ctrl = RegulationController(bp, reg_ctrl_p, tp.dt_pi)
         self.ekf = ExtendedKalmanFilter(bp, tp, ekf_p, thp, elp)
         self.mhe: MovingHorizonEstimator | None = None
         if run_mhe:
@@ -242,6 +242,7 @@ class MultiRateSimulator:
         # Timing instrumentation
         mpc_solve_times = np.zeros(N_mpc_steps)
         est_solve_times = np.zeros(N_mpc_steps)
+        mpc_solver_failures = 0
 
         # Reference tracking
         soc_ref_at_mpc = np.zeros(N_mpc_steps)
@@ -250,6 +251,9 @@ class MultiRateSimulator:
         # Regulation tracking (dt_sim resolution)
         power_delivered_log = np.zeros(N_sim_steps)
         activation_log = activation_signal_full.copy()
+
+        # EMS reference storage (for plotting)
+        ems_soc_refs: list[np.ndarray] = []
 
         # Cell-level arrays (only when multi-cell)
         n_cells = self.n_cells
@@ -371,6 +375,7 @@ class MultiRateSimulator:
                     )
 
                 P_reg_committed = float(ems_result["P_reg_ref"][0])
+                ems_soc_refs.append(ems_result["SOC_ref"].copy())
 
                 # Blending
                 if ems_hour > 0:
@@ -460,6 +465,8 @@ class MultiRateSimulator:
                     )
                     if mpc_idx < N_mpc_steps:
                         mpc_solve_times[mpc_idx] = time.perf_counter() - t0_mpc
+                    if self.mpc.last_solve_failed:
+                        mpc_solver_failures += 1
                 else:
                     # No MPC: use EMS reference directly
                     off = min(mpc_ref_base, len(p_chg_ref_mpc_local) - 1)
@@ -505,7 +512,7 @@ class MultiRateSimulator:
             activation = activation_signal_full[sim_step]
 
             if use_pi:
-                u_actual, P_delivered = self.pi.compute(
+                u_actual, P_delivered = self.reg_ctrl.compute(
                     P_chg_base=u_mpc[0],
                     P_dis_base=u_mpc[1],
                     P_reg_committed=P_reg_committed,
@@ -651,12 +658,15 @@ class MultiRateSimulator:
             "deg_cost": deg_cost_arr[:mpc_idx],
             "total_profit": total_profit,
             "soh_degradation": soh_true[0] - soh_true[-1],
+            # EMS references (for plotting)
+            "ems_soc_refs": ems_soc_refs,
             # Scenario prices (probability-weighted expected prices)
             "prices_energy": (probabilities[:, None] * energy_scenarios).sum(axis=0),
             "prices_reg": (probabilities[:, None] * reg_scenarios).sum(axis=0),
             # Timing
             "mpc_solve_times": mpc_solve_times[:mpc_idx],
             "est_solve_times": est_solve_times[:mpc_idx],
+            "mpc_solver_failures": mpc_solver_failures,
             # Reference tracking
             "soc_ref_at_mpc": soc_ref_at_mpc[:mpc_idx],
             "power_ref_at_mpc": power_ref_at_mpc[:mpc_idx],

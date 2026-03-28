@@ -1,8 +1,18 @@
-"""Stochastic FCR activation signal generator using a 3-state Markov chain.
+"""Stochastic regulation activation signal generator (PJM RegD-style).
 
-States: IDLE (0), UP (+1), DOWN (-1).  Transitions occur at each dt_pi step
-(4s by default).  When in UP or DOWN, the activation magnitude is drawn
-from U(0.3, 1.0) to model realistic partial activations.
+Models a **centrally dispatched** regulation signal, where the system
+operator sends activation commands to the BESS at each time step.
+This is representative of PJM RegD or AEMO FCAS dispatch signals.
+
+Note: this is NOT a European FCR droop model, where the battery measures
+local grid frequency and responds via a proportional droop curve
+(P = -K_droop * delta_f).  In a droop model, no central dispatch is
+needed — the battery responds autonomously to frequency deviations.
+
+Implementation: 3-state Markov chain (IDLE, UP, DOWN).  Transitions
+occur at each dt step (4s by default).  When in UP or DOWN, the
+activation magnitude is drawn from U(0.3, 1.0) to model realistic
+partial activations.
 
 The output signal is in [-1, +1] and represents the fraction of committed
 regulation capacity that the grid demands at each instant.
@@ -26,7 +36,7 @@ _DOWN = 2
 
 
 class ActivationSignalGenerator:
-    """Stochastic FCR activation signal via 3-state Markov chain."""
+    """Stochastic centrally-dispatched regulation signal (PJM RegD-style)."""
 
     def __init__(
         self,

@@ -5,7 +5,7 @@ stochastic activation signals at 4s resolution.  New control layer:
 
     EMS (3600s) -> MPC (60s) -> PI Controller (4s) -> Plant (4s)
 
-New parameter classes: PIParams, RegulationParams, Strategy.
+New parameter classes: RegControllerParams, RegulationParams, Strategy.
 Changes: dt_sim -> 4s, MPC simplified to 2-state (SOC, T) with SOH frozen.
 
 All physical units are SI-consistent and explicitly documented:
@@ -76,7 +76,7 @@ class ThermalParams:
     h_cool: float = 50.0               # Cooling coefficient  [W/K]
     T_ambient: float = 25.0            # Ambient temperature  [degC]
     T_init: float = 25.0               # Initial cell temperature  [degC]
-    T_max: float = 45.0                # Maximum allowable temperature  [degC]
+    T_max: float = 30.0                # Maximum allowable temperature  [degC]
     T_min: float = 5.0                 # Minimum allowable temperature  [degC]
     V_nominal: float = 800.0           # Nominal pack voltage  [V]
     E_a: float = 20_000.0             # Arrhenius activation energy  [J/mol]
@@ -197,7 +197,7 @@ class TimeParams:
 class EMSParams:
     """Parameters for the stochastic Energy Management System optimizer.
 
-    v5: adds reg_soc_margin and expected_activation_frac for regulation.
+    v5: adds endurance_hours and expected_activation_frac for regulation.
     """
 
     N_ems: int = 24                    # Planning horizon  [hours / steps at dt_ems]
@@ -205,7 +205,7 @@ class EMSParams:
     n_scenarios: int = 5               # Number of price scenarios
     regulation_fraction: float = 0.3   # Max fraction of P_max for regulation  [-]
     degradation_cost: float = 50.0     # Cost of SOH loss  [$/unit SOH lost]
-    reg_soc_margin: float = 0.05       # SOC margin for regulation delivery  [-]  [v5]
+    endurance_hours: float = 0.5        # Required sustained full-activation endurance  [hours]  [v5]
     expected_activation_frac: float = 0.29  # E[|activation|] from Markov chain stationary dist  [-]  [v5]
     terminal_soc_weight: float = 1e4   # Terminal SOC deviation penalty
     terminal_soh_weight: float = 1e4   # Terminal SOH deviation penalty
@@ -228,30 +228,29 @@ class MPCParams:
     R_delta: float = 10.0              # Control rate-of-change penalty
     Q_terminal: float = 1e5            # Terminal SOC penalty
     slack_penalty: float = 1e6         # Soft SOC constraint violation penalty
-    slack_penalty_temp: float = 1e5    # Soft temperature constraint penalty
+    slack_penalty_temp: float = 1e7    # Soft temperature constraint penalty
     n_blend_steps: int = 5             # EMS boundary reference smoothing  [MPC steps]
 
 
 @dataclass(frozen=True)
-class PIParams:
-    """PI controller for fast FCR regulation tracking at dt_pi = 4s.
+class RegControllerParams:
+    """Feedforward regulation controller for activation signal tracking.
 
-    The PI controller modifies the MPC base power setpoint to track
-    the grid's FCR activation signal.  SOC safety clamps prevent
-    regulation delivery when the battery lacks headroom.
+    Modifies the MPC base power setpoint to deliver the grid's activation
+    signal.  SOC safety clamps prevent regulation delivery when the battery
+    lacks headroom.
 
     Safety zones (linear scale-down):
       - Below soc_safety_low:  reduce delivery linearly to zero at soc_cutoff_low
       - Above soc_safety_high: reduce delivery linearly to zero at soc_cutoff_high
     """
 
-    Kp: float = 0.8                    # Proportional gain  [-]
-    Ki: float = 0.05                   # Integral gain  [1/s]
-    anti_windup_limit: float = 50.0    # Integrator clamp  [kW]
-    soc_safety_low: float = 0.15       # Start reducing reg below this SOC  [-]
-    soc_safety_high: float = 0.85      # Start reducing reg above this SOC  [-]
-    soc_cutoff_low: float = 0.12       # Zero reg delivery below this SOC  [-]
-    soc_cutoff_high: float = 0.88      # Zero reg delivery above this SOC  [-]
+    soc_safety_low: float = 0.13       # Start reducing reg below this SOC  [-]
+    soc_safety_high: float = 0.87      # Start reducing reg above this SOC  [-]
+    soc_cutoff_low: float = 0.11       # Zero reg delivery below this SOC  [-]
+    soc_cutoff_high: float = 0.89      # Zero reg delivery above this SOC  [-]
+    recovery_gain: float = 0.05        # SOC recovery proportional gain  [-]
+    recovery_deadband: float = 0.05    # Activation deadband for recovery  [-]
 
 
 @dataclass(frozen=True)

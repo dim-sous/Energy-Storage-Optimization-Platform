@@ -33,7 +33,7 @@ from config.parameters import (
     MHEParams,
     MPCParams,
     PackParams,
-    PIParams,
+    RegControllerParams,
     RegulationParams,
     Strategy,
     ThermalParams,
@@ -86,7 +86,7 @@ def main() -> None:
     thp = ThermalParams()
     elp = ElectricalParams()
     pp = PackParams()
-    pi_p = PIParams()
+    reg_ctrl_p = RegControllerParams()
     reg_p = RegulationParams()
 
     logger.info("=" * 62)
@@ -98,11 +98,10 @@ def main() -> None:
     logger.info("  --- Electrical (2RC) ---")
     logger.info("  R_total:    %.4f Ohm", elp.R_total_dc)
     logger.info("  --- Regulation (v5) ---")
-    logger.info("  dt_pi:      %d s", tp.dt_pi)
-    logger.info("  PI gains:   Kp=%.2f, Ki=%.3f", pi_p.Kp, pi_p.Ki)
+    logger.info("  dt_reg:     %d s", tp.dt_pi)
     logger.info("  SOC safety: [%.2f, %.2f] cutoff [%.2f, %.2f]",
-                pi_p.soc_safety_low, pi_p.soc_safety_high,
-                pi_p.soc_cutoff_low, pi_p.soc_cutoff_high)
+                reg_ctrl_p.soc_safety_low, reg_ctrl_p.soc_safety_high,
+                reg_ctrl_p.soc_cutoff_low, reg_ctrl_p.soc_cutoff_high)
     logger.info("  Penalty:    %.1fx capacity price", reg_p.penalty_mult)
     logger.info("  Delivery $: %.3f $/kWh", reg_p.price_activation)
     logger.info("  --- Pack ---")
@@ -128,7 +127,7 @@ def main() -> None:
     # ---- Multi-rate simulation ----
     simulator = MultiRateSimulator(
         bp, tp, ep, mp, ekf_p, mhe_p, thp, elp,
-        pi_p, reg_p, strategy, pp, run_mhe=run_mhe,
+        reg_ctrl_p, reg_p, strategy, pp, run_mhe=run_mhe,
     )
     results = simulator.run(energy_scen, reg_scen, probs)
 
@@ -204,6 +203,7 @@ def main() -> None:
     est_t = results["est_solve_times"]
     metrics["avg_mpc_solve_time_s"] = float(np.mean(mpc_t)) if len(mpc_t) > 0 else 0.0
     metrics["max_mpc_solve_time_s"] = float(np.max(mpc_t)) if len(mpc_t) > 0 else 0.0
+    metrics["mpc_solver_failures"] = int(results.get("mpc_solver_failures", 0))
     metrics["avg_estimator_solve_time_s"] = float(np.mean(est_t)) if len(est_t) > 0 else 0.0
     metrics["max_estimator_solve_time_s"] = float(np.max(est_t)) if len(est_t) > 0 else 0.0
 
@@ -260,6 +260,7 @@ def main() -> None:
     if mpc_t is not None and len(mpc_t) > 0:
         print(f"  Avg MPC solve:    {np.mean(mpc_t)*1000:.1f} ms")
         print(f"  Max MPC solve:    {np.max(mpc_t)*1000:.1f} ms")
+        print(f"  MPC failures:     {results.get('mpc_solver_failures', 0)}")
     est_t = results.get("est_solve_times")
     if est_t is not None and len(est_t) > 0:
         print(f"  Avg Est solve:    {np.mean(est_t)*1000:.1f} ms")

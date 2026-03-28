@@ -135,6 +135,7 @@ class EconomicEMS:
         SOH: list[ca.MX] = []
         TEMP: list[ca.MX] = []
         eps_soc: list[ca.MX] = []
+        eps_endurance: list[ca.MX] = []  # soft endurance constraint slack
 
         for _ in range(S):
             P_chg.append(opti.variable(N))
@@ -144,6 +145,7 @@ class EconomicEMS:
             SOH.append(opti.variable(N + 1))
             TEMP.append(opti.variable(N + 1))
             eps_soc.append(opti.variable(N + 1))
+            eps_endurance.append(opti.variable(N))
 
         total_obj = 0.0
 
@@ -179,16 +181,26 @@ class EconomicEMS:
                     P_chg[s][k] + P_dis[s][k] + P_reg[s][k]
                 ) * self.tp.dt_ems
 
-                # SOC headroom penalty — discourage P_reg when SOC
-                # is within reg_soc_margin of its bounds.  The battery
-                # needs headroom to deliver ±P_reg in real time.
-                soc_margin_low = SOC[s][k] - bp.SOC_min
-                soc_margin_high = bp.SOC_max - SOC[s][k]
-                soc_headroom = ca.fmin(soc_margin_low, soc_margin_high)
-                headroom_deficit = ca.fmax(0, ep.reg_soc_margin - soc_headroom)
-                headroom_penalty = 1e4 * headroom_deficit ** 2 * P_reg[s][k]
+                # Endurance constraint: SOC must have room to sustain
+                # P_reg for endurance_hours at full activation in either direction.
+                # Lower: discharge drains SOC by P_reg*t / (E_nom * eta_d)
+                # Upper: charge fills SOC by P_reg*t * eta_c / E_nom
+                margin_low = (
+                    P_reg[s][k] * ep.endurance_hours
+                    / (bp.E_nom_kwh * bp.eta_discharge)
+                )
+                margin_high = (
+                    P_reg[s][k] * ep.endurance_hours
+                    * bp.eta_charge / bp.E_nom_kwh
+                )
+                opti.subject_to(
+                    SOC[s][k + 1] >= bp.SOC_min + margin_low - eps_endurance[s][k]
+                )
+                opti.subject_to(
+                    SOC[s][k + 1] <= bp.SOC_max - margin_high + eps_endurance[s][k]
+                )
 
-                scenario_profit += energy_rev + reg_rev - deg_cost - headroom_penalty
+                scenario_profit += energy_rev + reg_rev - deg_cost
 
             # Terminal penalties
             scenario_profit -= ep.terminal_soc_weight * (
@@ -202,8 +214,13 @@ class EconomicEMS:
             for k in range(N + 1):
                 scenario_profit -= 1e5 * eps_soc[s][k] ** 2
 
+            # Soft endurance constraint penalty
+            for k in range(N):
+                scenario_profit -= 1e5 * eps_endurance[s][k] ** 2
+
             # ---- Bounds for this scenario ----
             opti.subject_to(eps_soc[s] >= 0)
+            opti.subject_to(eps_endurance[s] >= 0)
             for k in range(N + 1):
                 opti.subject_to(SOC[s][k] >= bp.SOC_min - eps_soc[s][k])
                 opti.subject_to(SOC[s][k] <= bp.SOC_max + eps_soc[s][k])
@@ -240,6 +257,7 @@ class EconomicEMS:
             opti.set_initial(P_dis[s], 0.0)
             opti.set_initial(P_reg[s], 0.0)
             opti.set_initial(eps_soc[s], 0.0)
+            opti.set_initial(eps_endurance[s], 0.0)
 
         # ---- Solver options ----
         opts = {

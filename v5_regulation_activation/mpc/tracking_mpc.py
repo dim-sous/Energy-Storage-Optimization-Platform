@@ -105,6 +105,9 @@ class TrackingMPC:
         self.thp = thp
         self.elp = elp
 
+        # Solver failure tracking
+        self.last_solve_failed = False
+
         # Warm-start caches
         self._prev_P_chg: np.ndarray | None = None
         self._prev_P_dis: np.ndarray | None = None
@@ -293,7 +296,7 @@ class TrackingMPC:
 
         soc_0_val = float(np.clip(x_est[0], self.bp.SOC_min, self.bp.SOC_max))
         soh_val = float(np.clip(x_est[1], 0.5, 1.0))
-        temp_0_val = float(np.clip(x_est[2], thp.T_min, thp.T_max))
+        temp_0_val = float(np.clip(x_est[2], thp.T_min - 5.0, thp.T_max + 5.0))
 
         if u_prev is None:
             u_prev = np.array([p_chg_ref[0], p_dis_ref[0], p_reg_ref[0]])
@@ -327,6 +330,7 @@ class TrackingMPC:
         # Solve
         try:
             sol = opti.solve()
+            self.last_solve_failed = False
 
             pc = np.array(sol.value(self._P_chg)).flatten()
             pd = np.array(sol.value(self._P_dis)).flatten()
@@ -345,6 +349,7 @@ class TrackingMPC:
 
         except RuntimeError as exc:
             logger.warning("MPC solver failed: %s", str(exc)[:200])
+            self.last_solve_failed = True
             u_cmd = np.zeros(3)
 
         return u_cmd
