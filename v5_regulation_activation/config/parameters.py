@@ -245,10 +245,10 @@ class RegControllerParams:
       - Above soc_safety_high: reduce delivery linearly to zero at soc_cutoff_high
     """
 
-    soc_safety_low: float = 0.13       # Start reducing reg below this SOC  [-]
-    soc_safety_high: float = 0.87      # Start reducing reg above this SOC  [-]
-    soc_cutoff_low: float = 0.11       # Zero reg delivery below this SOC  [-]
-    soc_cutoff_high: float = 0.89      # Zero reg delivery above this SOC  [-]
+    soc_safety_low: float = 0.15       # Start reducing reg below this SOC  [-]
+    soc_safety_high: float = 0.85      # Start reducing reg above this SOC  [-]
+    soc_cutoff_low: float = 0.12       # Zero reg delivery below this SOC  [-]
+    soc_cutoff_high: float = 0.88      # Zero reg delivery above this SOC  [-]
     recovery_gain: float = 0.05        # SOC recovery proportional gain  [-]
     recovery_deadband: float = 0.05    # Activation deadband for recovery  [-]
 
