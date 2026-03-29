@@ -78,7 +78,7 @@ Replace CasADi/IPOPT MPC with ACADOS. Implement multiple shooting, Real-Time Ite
 v9 — Degradation-Aware MPC (High / Extremely High)
 Add SOH to MPC state. Add degradation cost to objective. Enforce SOH ≥ SOH_min constraint. Characterize profit vs degradation tradeoff.
 v10 — Disturbance Forecast Uncertainty (High / High)
-Add stochastic price forecasts. Implement scenario-based MPC (web search Alberto Bemporad for inspiration on stochastic MPC). Compare profit and robustness against v9.
+Add stochastic price forecasts. Implement scenario-based MPC (web search Alberto Bemporad for inspiration on stochastic MPC). Compare profit and robustness against v9. Replace ad-hoc historical resampling in scenario generation with a proper method: quantile regression on price residuals, copula-based generation for energy/regulation price correlation, and scenario reduction via Wasserstein distance (Growe-Kuska et al.).
 v11 — Measurement and Communication Delays (High / High)
 Add measurement delay, actuator delay, random latency. Update estimator and MPC to compensate.
 v12 — Multi-Battery System (Very High / High)
