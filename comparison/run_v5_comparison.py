@@ -16,11 +16,14 @@ Saves structured results to results/v5_comparison.json for the
 presentation generator.
 
 Usage:
-    uv run python comparison/run_v5_comparison.py
+    uv run python comparison/run_v5_comparison.py          # 1 day (quick check)
+    uv run python comparison/run_v5_comparison.py --full    # 84 days
+    uv run python comparison/run_v5_comparison.py -n 10     # custom day count
 """
 
 from __future__ import annotations
 
+import argparse
 import gc
 import json
 import logging
@@ -254,8 +257,19 @@ def print_results(agg: dict[str, dict], n_days: int) -> None:
 # =========================================================================
 
 def main() -> None:
-    """Run 84-day comparison on real German market data."""
-    N_DAYS = 84        # Full Q1 2024
+    """Run strategy comparison on real German market data."""
+    parser = argparse.ArgumentParser(description="v5 strategy comparison")
+    parser.add_argument("--full", action="store_true", help="Run all 84 days")
+    parser.add_argument("-n", type=int, default=None, help="Number of days")
+    args = parser.parse_args()
+
+    if args.n is not None:
+        N_DAYS = args.n
+    elif args.full:
+        N_DAYS = 84
+    else:
+        N_DAYS = 1
+
     N_FORECAST = 5     # Forecast scenarios per day (realized excluded)
 
     # Parameters

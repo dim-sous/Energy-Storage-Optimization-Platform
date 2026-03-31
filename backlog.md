@@ -34,6 +34,15 @@ The MPC objective is dominated by SOC tracking (Q_soc=1e4), which forces MPC to 
 
 Most impactful change is likely economic MPC formulation + shorter battery duration.
 
+### 3. Degradation rate too high for FCR cycling (v5)
+
+With the plant fix (pre-integration power limiting), optimized strategies show 0.71% SOH loss per day — 260%/year. This is physically unrealistic; real BESS in FCR service see ~1-3%/year. The `alpha_deg` parameter was calibrated for energy arbitrage cycling patterns (deep cycles), not FCR (many shallow cycles at ~1.7% average depth). The linear throughput degradation model `dSOH = -alpha_deg * (P_chg + P_dis + P_reg)` also penalizes regulation power equally to charge/discharge, which overstates wear for symmetric FCR where net energy throughput is near zero.
+
+**Options:**
+- Recalibrate `alpha_deg` for realistic annual degradation (~1-3% for FCR)
+- Separate regulation power from charge/discharge in the degradation model (FCR cycling is much less damaging than deep arbitrage cycles)
+- Consider a cycle-counting degradation model (rainflow) instead of linear throughput
+
 ---
 
 ## v1_baseline — Four-Stage Gate

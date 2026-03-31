@@ -516,21 +516,34 @@ class BatteryPlant:
             Noisy measurement [SOC_meas, T_meas, V_term_meas].
         """
         bp = self.bp
+        dt = self.tp.dt_sim
+        dt_h = dt / 3600.0
+        SOC = self._x[0]
+        SOH = self._x[1]
+        E_eff = SOH * bp.E_nom_kwh  # effective capacity [kWh]
 
-        # Clamp inputs to physical bounds
-        u_clamped = np.array([
-            np.clip(u[0], 0.0, bp.P_max_kw),
-            np.clip(u[1], 0.0, bp.P_max_kw),
-            np.clip(u[2], 0.0, bp.P_max_kw),
-        ])
+        # Clamp inputs to rated power
+        P_chg = float(np.clip(u[0], 0.0, bp.P_max_kw))
+        P_dis = float(np.clip(u[1], 0.0, bp.P_max_kw))
+        P_reg = float(np.clip(u[2], 0.0, bp.P_max_kw))
 
-        x_new = self._rk4_step(self._x, u_clamped, self.tp.dt_sim)
+        # Limit power to available energy — prevents physically
+        # impossible SOC values so post-integration clamping is
+        # never needed.
+        # Max charge: don't exceed SOC_max
+        max_chg_kw = (bp.SOC_max - SOC) * E_eff / (bp.eta_charge * dt_h)
+        P_chg = min(P_chg, max(0.0, max_chg_kw))
 
-        # --- State saturation ---
-        if x_new[0] < bp.SOC_min:
-            x_new[0] = bp.SOC_min
-        elif x_new[0] > bp.SOC_max:
-            x_new[0] = bp.SOC_max
+        # Max discharge: don't go below SOC_min
+        max_dis_kw = (SOC - bp.SOC_min) * E_eff * bp.eta_discharge / dt_h
+        P_dis = min(P_dis, max(0.0, max_dis_kw))
+
+        u_clamped = np.array([P_chg, P_dis, P_reg])
+
+        x_new = self._rk4_step(self._x, u_clamped, dt)
+
+        # --- State saturation (safety clamp, should rarely trigger) ---
+        x_new[0] = np.clip(x_new[0], bp.SOC_min, bp.SOC_max)
 
         x_new[1] = np.clip(x_new[1], 0.5, 1.0)
         x_new[2] = np.clip(x_new[2], -20.0, 80.0)

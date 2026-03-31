@@ -565,15 +565,8 @@ class MultiRateSimulator:
             power_delivered_log[sim_step] = P_delivered
 
             # Energy profit and degradation accounting (every PI step).
-            # Use actual SOC change to derive real net power — the plant
-            # clips power when SOC hits limits, so commanded power can
-            # overstate what was actually delivered.
-            soc_before = soc_true[sim_step]
-            soc_after = soc_true[sim_step + 1]
-            delta_soc = soc_after - soc_before
-            # delta_soc < 0 → net discharge, delta_soc > 0 → net charge
-            # Convert to net power: P_net = -delta_soc * E_nom / dt_h
-            # Revenue = price * P_net_discharge = price * (-delta_soc) * E / dt
+            # The plant limits power before integration, so u_actual
+            # reflects what was physically delivered.
             ems_hour_now = sim_step // steps_per_ems
             if ems_hour_now < energy_scenarios.shape[1]:
                 price_e = float(energy_scenarios[0, ems_hour_now])
@@ -581,13 +574,10 @@ class MultiRateSimulator:
                 price_e = float(energy_scenarios[0, -1])
 
             dt_h_pi = tp.dt_pi / 3600.0
-            # Net discharge power in kW (positive = selling to grid)
-            P_net_kw = -delta_soc * bp.E_nom_kwh / dt_h_pi
-            e_profit_step = price_e * P_net_kw * dt_h_pi
-            # Degradation: use actual power (capped at what the plant accepted)
-            P_actual_total = abs(P_net_kw)
+            e_profit_step = price_e * (u_actual[1] - u_actual[0]) * dt_h_pi
             d_cost_step = (
-                ep.degradation_cost * bp.alpha_deg * P_actual_total * tp.dt_pi
+                ep.degradation_cost * bp.alpha_deg
+                * (u_actual[0] + u_actual[1] + u_actual[2]) * tp.dt_pi
             )
             cum_energy_profit += e_profit_step
             cum_deg_cost += d_cost_step
