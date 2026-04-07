@@ -205,7 +205,7 @@ def run_simulation(
 
         # 3. Per-step: PI (or open-loop) + plant
         activation_k = float(activation[k])
-        if strategy.pi is not None:
+        if strategy.pi is not None and strategy.pi_enabled:
             u_command, p_delivered = strategy.pi.compute(
                 setpoint_pnet=setpoint_pnet,
                 p_reg_committed=setpoint_preg,

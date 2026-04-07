@@ -31,15 +31,19 @@ def make_strategy(
     thp: ThermalParams,
     elp: ElectricalParams,
     reg_ctrl_p: RegControllerParams,
+    pi_enabled: bool = True,
     **_unused,
 ) -> Strategy:
+    suffix = "" if pi_enabled else "_no_pi"
+    label = "Tracking MPC (sanity)" if pi_enabled else "Tracking MPC no-PI (sanity)"
     return Strategy(
-        name="tracking_mpc",
+        name=f"tracking_mpc{suffix}",
         planner=EconomicEMS(bp, tp, ep, thp, elp),
         mpc=TrackingMPCAdapter(TrackingMPC(bp, tp, mp, thp, elp)),
         pi=RegulationController(bp, reg_ctrl_p, tp.dt_pi),
+        pi_enabled=pi_enabled,
         metadata={
-            "label": "Tracking MPC (sanity)",
+            "label": label,
             "pitch_visible": False,
             "description": "EMS + tracking MPC (Q_soc-dominated) + PI. Old v5 stack.",
         },

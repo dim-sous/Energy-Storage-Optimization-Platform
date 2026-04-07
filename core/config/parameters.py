@@ -319,6 +319,7 @@ class RegulationParams:
     penalty_mult: float = 3.0          # Non-delivery penalty multiplier  [-]
     delivery_tolerance: float = 0.05   # Allowed delivery error fraction  [-]
     activation_seed: int = 99          # RNG seed for stochastic activation
+    sigma_mhz_mult: float = 1.0        # Multiplier on OU frequency std (stress regime)
 
     # Markov chain transition probabilities  [per step]
     p_idle_to_up: float = 0.02

@@ -64,4 +64,5 @@ class Strategy:
     planner: _PlannerLike
     mpc: Optional[_MPCLike] = None
     pi: Optional[_PILike] = None
+    pi_enabled: bool = True
     metadata: dict[str, Any] = field(default_factory=dict)

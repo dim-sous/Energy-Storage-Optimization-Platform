@@ -39,16 +39,20 @@ def make_strategy(
     elp: ElectricalParams,
     reg_ctrl_p: RegControllerParams,
     reg_p: RegulationParams,
+    pi_enabled: bool = True,
     **_unused,
 ) -> Strategy:
+    suffix = "" if pi_enabled else "_no_pi"
+    label = "Economic MPC (v5)" if pi_enabled else "Economic MPC (no PI)"
     return Strategy(
-        name="economic_mpc",
+        name=f"economic_mpc{suffix}",
         planner=EconomicEMS(bp, tp, ep, thp, elp),
         mpc=EconomicMPCAdapter(EconomicMPC(bp, tp, mp, thp, elp, ep, reg_p)),
         pi=RegulationController(bp, reg_ctrl_p, tp.dt_pi),
+        pi_enabled=pi_enabled,
         metadata={
-            "label": "Economic MPC (v5)",
-            "pitch_visible": True,
+            "label": label,
+            "pitch_visible": pi_enabled,
             "description": "Stochastic EMS + activation-aware economic MPC + PI. v5 product.",
         },
     )

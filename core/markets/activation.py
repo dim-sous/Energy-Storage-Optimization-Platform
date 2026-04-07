@@ -69,6 +69,7 @@ class ActivationSignalGenerator:
         self._rp = reg_params
         self._dt = dt
         self._rng = np.random.default_rng(reg_params.activation_seed)
+        self._sigma_mhz = _SIGMA_MHZ * reg_params.sigma_mhz_mult
 
     def generate(self, n_steps: int) -> np.ndarray:
         """Generate activation signal array of shape (n_steps,), values in [-1, +1].
@@ -86,7 +87,7 @@ class ActivationSignalGenerator:
         alpha = dt / _TAU_S
         decay = np.exp(-alpha)
         # OU stationary variance = sigma^2, diffusion chosen accordingly
-        noise_std = _SIGMA_MHZ * np.sqrt(1.0 - decay ** 2)
+        noise_std = self._sigma_mhz * np.sqrt(1.0 - decay ** 2)
 
         # Heavy tails: use t-distribution instead of Gaussian.
         # t-distribution with df degrees of freedom has kurtosis 3 + 6/(df-4).
