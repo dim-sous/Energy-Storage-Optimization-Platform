@@ -281,22 +281,35 @@ class EconomicEMS:
             logger.error("EMS solver failed: %s", exc)
             return self._fallback_result(N, soc_init, soh_init, t_init)
 
-        # ---- Extract probability-weighted references ----
-        p_chg_ref = np.zeros(N)
-        p_dis_ref = np.zeros(N)
-        p_reg_ref = np.zeros(N)
-        soc_ref = np.zeros(N + 1)
-        soh_ref = np.zeros(N + 1)
-        temp_ref = np.zeros(N + 1)
+        # ---- Extract per-scenario trajectories (Wow Factor 1) ----
+        # Shape: (S, N) for powers, (S, N+1) for states.
+        scenarios_p_chg = np.stack(
+            [np.array(sol.value(P_chg[s])).flatten() for s in range(S)]
+        )
+        scenarios_p_dis = np.stack(
+            [np.array(sol.value(P_dis[s])).flatten() for s in range(S)]
+        )
+        scenarios_p_reg = np.stack(
+            [np.array(sol.value(P_reg[s])).flatten() for s in range(S)]
+        )
+        scenarios_soc = np.stack(
+            [np.array(sol.value(SOC[s])).flatten() for s in range(S)]
+        )
+        scenarios_soh = np.stack(
+            [np.array(sol.value(SOH[s])).flatten() for s in range(S)]
+        )
+        scenarios_temp = np.stack(
+            [np.array(sol.value(TEMP[s])).flatten() for s in range(S)]
+        )
 
-        for s in range(S):
-            w = float(probabilities[s])
-            p_chg_ref += w * np.array(sol.value(P_chg[s])).flatten()
-            p_dis_ref += w * np.array(sol.value(P_dis[s])).flatten()
-            p_reg_ref += w * np.array(sol.value(P_reg[s])).flatten()
-            soc_ref += w * np.array(sol.value(SOC[s])).flatten()
-            soh_ref += w * np.array(sol.value(SOH[s])).flatten()
-            temp_ref += w * np.array(sol.value(TEMP[s])).flatten()
+        # Probability-weighted averages (backward-compat with non-MPC strategies).
+        w = np.asarray(probabilities, dtype=float)
+        p_chg_ref = (w[:, None] * scenarios_p_chg).sum(axis=0)
+        p_dis_ref = (w[:, None] * scenarios_p_dis).sum(axis=0)
+        p_reg_ref = (w[:, None] * scenarios_p_reg).sum(axis=0)
+        soc_ref   = (w[:, None] * scenarios_soc).sum(axis=0)
+        soh_ref   = (w[:, None] * scenarios_soh).sum(axis=0)
+        temp_ref  = (w[:, None] * scenarios_temp).sum(axis=0)
 
         expected_profit = float(-sol.value(total_obj))
 
@@ -319,6 +332,14 @@ class EconomicEMS:
             "VRC1_ref": np.zeros(N + 1),   # V_rc not modeled at EMS layer
             "VRC2_ref": np.zeros(N + 1),
             "expected_profit": expected_profit,
+            # Per-scenario second-stage trajectories (Wow Factor 1).
+            "scenarios_p_chg": scenarios_p_chg,
+            "scenarios_p_dis": scenarios_p_dis,
+            "scenarios_p_reg": scenarios_p_reg,
+            "scenarios_soc":   scenarios_soc,
+            "scenarios_soh":   scenarios_soh,
+            "scenarios_temp":  scenarios_temp,
+            "probabilities":   np.asarray(probabilities, dtype=float),
         }
 
     # ------------------------------------------------------------------
