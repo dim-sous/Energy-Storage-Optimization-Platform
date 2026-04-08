@@ -513,13 +513,23 @@ class BatteryPlant:
         return x + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
 
     # ---- public interface ----
-    def step(self, u: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def step(
+        self,
+        u: np.ndarray,
+        activation_k: float = 0.0,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
         """Integrate one ``dt_sim`` step.
 
         v5 refactor: takes a 2-vector ``[P_net_signed, P_reg]`` instead of
         the legacy ``(P_chg, P_dis, P_reg)`` triple. ``P_net > 0`` means
         discharge, ``P_net < 0`` means charge. This eliminates wash trades
         by construction (Bug A) — the battery only ever does net power.
+
+        RF1 (2026-04-15): the plant now tracks FCR activation internally
+        given the committed ``P_reg``. Callers pass the current activation
+        sample as ``activation_k`` and receive the actually-delivered FCR
+        power as a new return value. Strategies no longer see
+        ``activation_k`` — the plant is the BESS controller.
 
         The plant enforces the power budget ``|P_net| + P_reg <= P_max``
         (Bug B fix) and the SOC headroom (clamps charge so SOC stays
@@ -531,10 +541,17 @@ class BatteryPlant:
         Parameters
         ----------
         u : ndarray, shape (2,)
-            [P_net_signed, P_reg]   (kW)
+            [P_net_setpoint, P_reg_committed]   (kW)
             P_net > 0 = discharge, P_net < 0 = charge.
             P_reg >= 0 always (committed FCR capacity, not realized
             dispatch).
+        activation_k : float, default 0.0
+            Current FCR activation sample in [-1, +1]. The plant
+            computes ``P_net_with_activation = P_net_setpoint +
+            activation_k * P_reg_committed`` before clipping and
+            integration. Default 0.0 means "no activation," which
+            reproduces the pre-RF1 plant behavior when the caller
+            pre-added activation to ``u[0]``.
 
         Returns
         -------
@@ -546,6 +563,13 @@ class BatteryPlant:
             [P_net_applied, P_reg_applied] — the values actually applied
             after pre-integration clipping. Use these for downstream
             accounting, NOT the input ``u``.
+        p_delivered : float
+            Signed FCR power delivered this step, computed as
+            ``P_net_applied - P_net_setpoint``. Positive = up-reg
+            (discharge); negative = down-reg (charge). If the plant
+            clipped activation demand (SOC limit, P_max hit), this will
+            fall short of ``activation_k * P_reg_committed`` and the
+            ledger's penalty math fires.
         """
         bp = self.bp
         dt = self.tp.dt_sim
@@ -557,11 +581,14 @@ class BatteryPlant:
         # ---- 1. Runtime power limit |P_net| <= P_max ----
         # P_reg_committed is a CONTRACT, not a separate power channel.
         # The battery has ONE physical current = P_net at any instant.
-        # The EMS planning layer ensures |planned_setpoint| + P_reg <= P_max
-        # so even worst-case activation can be accommodated; the runtime
-        # only needs to check |P_net| <= P_max.
+        # The EMS planning layer ensures the worst-case activation fits
+        # in this budget.
+        P_net_setpoint = float(u[0])
         P_reg = float(np.clip(u[1], 0.0, bp.P_max_kw))
-        P_net = float(np.clip(u[0], -bp.P_max_kw, bp.P_max_kw))
+        # Plant-internal activation tracking (RF1). On real hardware this
+        # is the BESS controller's droop loop running at kHz cadence.
+        P_net_with_activation = P_net_setpoint + activation_k * P_reg
+        P_net = float(np.clip(P_net_with_activation, -bp.P_max_kw, bp.P_max_kw))
 
         # ---- 2. SOC headroom (pre-integration limiting) ----
         if P_net > 0.0:
@@ -599,7 +626,11 @@ class BatteryPlant:
         self._x = x_new.copy()
         y_meas = self.get_measurement()
         u_applied = np.array([P_net, P_reg])
-        return self._x.copy(), y_meas, u_applied
+        # RF1: p_delivered is the FCR power the plant actually served.
+        # Signed; the ledger uses |p_delivered| vs |activation * P_reg| to
+        # compute delivery score and penalty.
+        p_delivered = float(P_net - P_net_setpoint)
+        return self._x.copy(), y_meas, u_applied, p_delivered
 
     def get_measurement(self) -> np.ndarray:
         """Return noisy [SOC, Temperature, V_term] measurement.
@@ -761,7 +792,11 @@ class BatteryPack:
 
     # ---- public interface (matches BatteryPlant) ----
 
-    def step(self, u: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def step(
+        self,
+        u: np.ndarray,
+        activation_k: float = 0.0,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
         """Integrate one dt_sim step for all cells.
 
         v5 refactor: 2-vector input ``[P_net_signed, P_reg]``. Wash trades
@@ -774,7 +809,11 @@ class BatteryPack:
         Parameters
         ----------
         u : ndarray, shape (2,)
-            Pack-level [P_net_signed, P_reg]  (kW).
+            Pack-level [P_net_setpoint, P_reg_committed]  (kW).
+        activation_k : float, default 0.0
+            Current FCR activation sample in [-1, +1]. RF1: plant
+            applies activation at the pack boundary before the equal
+            split to cells.
 
         Returns
         -------
@@ -784,7 +823,10 @@ class BatteryPack:
             Noisy [SOC_pack, T_pack, V_term_pack].
         u_applied : ndarray, shape (2,)
             [P_net_applied, P_reg_applied] — actually-applied pack-level
-            power post-clipping. Always indexable as `[0]=net, [1]=reg`.
+            power post-clipping.
+        p_delivered : float
+            Signed FCR power delivered at pack level (= P_net_applied -
+            P_net_setpoint).
         """
         n = self.pp.n_cells
         bp = self.bp
@@ -799,8 +841,11 @@ class BatteryPack:
         soh_min_cell = float(np.min(cell_states[:, 1]))
         E_eff_pack = soh_min_cell * bp.E_nom_kwh
 
+        P_net_setpoint = float(u[0])
         P_reg = float(np.clip(u[1], 0.0, bp.P_max_kw))
-        P_net = float(np.clip(u[0], -bp.P_max_kw, bp.P_max_kw))
+        # RF1: plant-internal activation tracking at pack boundary.
+        P_net_with_activation = P_net_setpoint + activation_k * P_reg
+        P_net = float(np.clip(P_net_with_activation, -bp.P_max_kw, bp.P_max_kw))
 
         if P_net > 0.0:
             # Discharge: limited by the cell closest to SOC_min
@@ -847,7 +892,8 @@ class BatteryPack:
         x_pack = self.get_state()
         y_meas = self._make_measurement(x_pack)
         u_applied = np.array([P_net, P_reg])
-        return x_pack, y_meas, u_applied
+        p_delivered = float(P_net - P_net_setpoint)
+        return x_pack, y_meas, u_applied, p_delivered
 
     def get_state(self) -> np.ndarray:
         """Return aggregated pack state [SOC_mean, SOH_min, T_max, V_rc1_sum, V_rc2_sum]."""

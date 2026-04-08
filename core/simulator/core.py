@@ -221,8 +221,13 @@ def run_simulation(
                 p_max_kw=bp.P_max_kw,
             )
 
-        # 4. Plant integrates and reports actually-applied power
-        x_new, y_meas, u_applied = plant.step(u_command)
+        # 4. Plant integrates and reports actually-applied power.
+        # RF1 step A: plant accepts activation_k and returns p_delivered,
+        # but we pass activation_k=0.0 here because the strategy layer has
+        # already pre-added activation to u_command[0]. The plant's
+        # p_delivered is a stub (=0) in this step; the strategy's
+        # p_delivered is still the trace source. Step B will invert this.
+        x_new, y_meas, u_applied, _ = plant.step(u_command, activation_k=0.0)
 
         # 5. Record (use u_applied so accounting matches reality)
         cells_now = plant.get_cell_states() if use_pack else None

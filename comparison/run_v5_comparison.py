@@ -743,15 +743,16 @@ def print_results(agg: dict[str, dict], n_days: int) -> None:
     # ---- Pitch comparison: economic_mpc vs rule_based and deterministic_lp ----
     if "economic_mpc" in agg and "deterministic_lp" in agg:
         econ = np.array(agg["economic_mpc"]["profits"])
-        rb = np.array(agg["rule_based"]["profits"])
         lp = np.array(agg["deterministic_lp"]["profits"])
 
-        print(f"\n  [PITCH] Economic MPC vs Rule-Based:")
-        adv = econ - rb
-        print(f"    Advantage:  ${adv.mean():.2f}/day  "
-              f"({(adv > 0).mean() * 100:.0f}% win rate)")
-        print(f"    Annual (200 kWh): ${adv.mean() * 365:.0f}")
-        print(f"    Annual (50 MWh):  ${adv.mean() * 365 * 250:,.0f}")
+        if "rule_based" in agg:
+            rb = np.array(agg["rule_based"]["profits"])
+            print(f"\n  [PITCH] Economic MPC vs Rule-Based:")
+            adv = econ - rb
+            print(f"    Advantage:  ${adv.mean():.2f}/day  "
+                  f"({(adv > 0).mean() * 100:.0f}% win rate)")
+            print(f"    Annual (200 kWh): ${adv.mean() * 365:.0f}")
+            print(f"    Annual (50 MWh):  ${adv.mean() * 365 * 250:,.0f}")
 
         print(f"\n  [PITCH] Economic MPC vs Commercial Baseline (LP):")
         adv = econ - lp
