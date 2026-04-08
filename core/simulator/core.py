@@ -56,23 +56,16 @@ logger = logging.getLogger(__name__)
 def _open_loop_dispatch(
     setpoint_pnet: float,
     p_reg_committed: float,
-    activation: float,
-    soc_current: float,
-    p_max_kw: float,
-) -> tuple[np.ndarray, float]:
-    """Strategy with no PI controller — just apply activation directly.
+) -> np.ndarray:
+    """Trivial passthrough used by strategies without a PI layer.
 
-    Used by RULE_BASED, DETERMINISTIC_LP, and EMS_CLAMPS execution paths.
-    Mirrors the PI controller's net-dispatch math but without the SOC
-    safety scaling or recovery bias. Runtime power limit is |P_net| <=
-    P_max (the EMS planning layer guarantees the worst-case activation
-    fits inside this budget).
+    RF1 (2026-04-15): activation tracking lives in the plant now, so
+    an "open loop" strategy literally has nothing to do — it just hands
+    the EMS plan's hourly setpoint straight through to the plant, and
+    the plant applies activation on top. Used by RULE_BASED,
+    DETERMINISTIC_LP, and EMS_CLAMPS.
     """
-    p_reg_demand = activation * p_reg_committed
-    p_net = setpoint_pnet + p_reg_demand
-    p_net_clipped = float(np.clip(p_net, -p_max_kw, p_max_kw))
-    p_delivered = p_net_clipped - setpoint_pnet
-    return np.array([p_net_clipped, p_reg_committed]), p_delivered
+    return np.array([setpoint_pnet, p_reg_committed])
 
 
 def run_simulation(
@@ -203,31 +196,27 @@ def run_simulation(
             )
             mpc_idx += 1
 
-        # 3. Per-step: PI (or open-loop) + plant
+        # 3. Per-step: PI (or open-loop) shapes the setpoint, plant applies
+        # activation internally and integrates. RF1 (2026-04-15): strategies
+        # no longer see activation_k. The plant is the BESS controller.
         activation_k = float(activation[k])
         if strategy.pi is not None and strategy.pi_enabled:
-            u_command, p_delivered = strategy.pi.compute(
+            u_command = strategy.pi.compute(
                 setpoint_pnet=setpoint_pnet,
                 p_reg_committed=setpoint_preg,
-                activation_signal=activation_k,
                 soc_current=state_est[0],
             )
         else:
-            u_command, p_delivered = _open_loop_dispatch(
+            u_command = _open_loop_dispatch(
                 setpoint_pnet=setpoint_pnet,
                 p_reg_committed=setpoint_preg,
-                activation=activation_k,
-                soc_current=state_est[0],
-                p_max_kw=bp.P_max_kw,
             )
 
-        # 4. Plant integrates and reports actually-applied power.
-        # RF1 step A: plant accepts activation_k and returns p_delivered,
-        # but we pass activation_k=0.0 here because the strategy layer has
-        # already pre-added activation to u_command[0]. The plant's
-        # p_delivered is a stub (=0) in this step; the strategy's
-        # p_delivered is still the trace source. Step B will invert this.
-        x_new, y_meas, u_applied, _ = plant.step(u_command, activation_k=0.0)
+        # 4. Plant integrates with the real activation sample and reports
+        # the actually-applied power + actually-delivered FCR power.
+        x_new, y_meas, u_applied, p_delivered = plant.step(
+            u_command, activation_k=activation_k,
+        )
 
         # 5. Record (use u_applied so accounting matches reality)
         cells_now = plant.get_cell_states() if use_pack else None

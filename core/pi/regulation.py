@@ -1,32 +1,27 @@
-"""Feedforward regulation controller for activation signal tracking.
+"""SOC-safety wrapper for the EMS/MPC power setpoint.
 
-v5 refactor: works in the new (P_net, P_reg) signed-power representation.
-A single net power value means simultaneous charge+discharge ("wash trade")
-is impossible by construction (Bug A fix). The controller enforces the
-power-budget headroom ``|P_net| + P_reg <= P_max`` (Bug B fix). The plant
-will additionally apply SOC headroom limiting and report the actually-applied
-power back to the simulator (Bug C fix).
+RF1 (2026-04-15): this module's job is now much smaller. Activation
+tracking has moved into the plant (it is the BESS controller on real
+hardware), so PI no longer sees or modulates the activation signal.
+
+What PI does now:
+  1. Reduce the committed FCR capacity ``p_reg_committed`` when SOC
+     is approaching either bound — the battery cannot safely deliver
+     a full FCR commitment when it has almost no headroom in the
+     direction the grid might pull. This is a *unilateral contract
+     reduction*: the ledger's capacity revenue drops with the reduced
+     commitment and the penalty math sees a smaller "demanded" amount,
+     so worst-case we give up some revenue to avoid a bigger penalty.
+  2. Apply a small SOC recovery bias to the base setpoint: nudge P_net
+     so that SOC drifts toward ``SOC_terminal`` over long timescales.
+     Small gain (design default 0.05 pre-RF1, tuned to 0.005 in step C).
+
+What PI no longer does (moved to the plant or deleted):
+  - Read or modulate ``activation_signal`` — plant handles it.
+  - Compute ``p_delivered`` — plant returns it.
+  - Enforce ``|P_net| + P_reg <= P_max`` — plant enforces it.
 
 Runs at dt_pi = 4 s.
-
-SOC safety zones
-----------------
-- Below ``soc_safety_low`` (0.15): linearly reduce up-regulation
-  (discharge demand) to zero at ``soc_cutoff_low`` (0.12).
-- Above ``soc_safety_high`` (0.85): linearly reduce down-regulation
-  (charge demand) to zero at ``soc_cutoff_high`` (0.88).
-
-Usage
------
-    ctrl = RegulationController(bp, reg_ctrl_params, dt=4.0)
-    u_command, p_delivered = ctrl.compute(
-        setpoint_pnet,        # MPC's planned net power [kW, signed]
-        p_reg_committed,      # EMS commitment [kW, >= 0]
-        activation_signal,    # grid signal [-1, +1]
-        soc_current,          # SOC estimate from EKF
-    )
-    # u_command is shape (2,) [P_net_signed, P_reg] ready for plant.step()
-    # p_delivered is the (signed) regulation power actually drawn this step
 """
 
 from __future__ import annotations
@@ -37,7 +32,7 @@ from core.config.parameters import BatteryParams, RegControllerParams
 
 
 class RegulationController:
-    """Feedforward regulation controller, signed-power formulation."""
+    """SOC-safety wrapper around the EMS/MPC setpoint (RF1)."""
 
     def __init__(
         self,
@@ -53,93 +48,70 @@ class RegulationController:
         self,
         setpoint_pnet: float,
         p_reg_committed: float,
-        activation_signal: float,
         soc_current: float,
-    ) -> tuple[np.ndarray, float]:
-        """Compute the actual command for the plant + delivered regulation power.
+    ) -> np.ndarray:
+        """Apply SOC-safety scaling and recovery bias to the base setpoint.
 
         Parameters
         ----------
         setpoint_pnet : float
-            MPC base net power setpoint [kW, signed].
-            > 0 = discharge, < 0 = charge, 0 = idle.
+            MPC / EMS base net power setpoint [kW, signed].
+            > 0 = discharge, < 0 = charge.
         p_reg_committed : float
             FCR capacity committed by the EMS for the current hour [kW, >= 0].
-        activation_signal : float
-            Grid activation in [-1, +1]. > 0 = up-reg (discharge demand),
-            < 0 = down-reg (charge demand).
         soc_current : float
-            Current SOC estimate (from EKF), used for safety clamping.
+            Current SOC estimate (from EKF).
 
         Returns
         -------
         u_command : ndarray, shape (2,)
-            ``[P_net_signed, P_reg_committed]`` ready to pass to ``plant.step()``.
-        p_delivered : float
-            Signed regulation power actually drawn by activation this step.
-            Positive = discharge (up-regulation), negative = charge.
-            Equal to ``u_command[0] - setpoint_pnet`` after clipping.
+            ``[P_net_setpoint_biased, P_reg_committed_clamped]`` ready to
+            pass to ``plant.step(u, activation_k)``. The plant will apply
+            activation on top of this.
         """
         bp = self._bp
         rp = self._rp
         P_max = bp.P_max_kw
 
-        # ---- 1. Activation demand (signed) ----
-        # Sign convention: activation > 0 = up-reg = discharge → positive P_net delta
-        p_reg_demand = activation_signal * p_reg_committed
+        # ---- 1. SOC safety: reduce the committed capacity near bounds ----
+        # Any activation — up or down — could push SOC further into a
+        # bound when SOC is already close to it. Scale p_reg_committed
+        # symmetrically so the plant has less to deliver in the danger
+        # zone. The ledger will see the reduced commitment via u_applied,
+        # so capacity revenue drops with this — we trade revenue for
+        # avoiding larger penalties.
+        p_reg_safe = self._soc_clamp_committed(p_reg_committed, soc_current)
 
-        # ---- 2. SOC safety clamping on the demand ----
-        p_reg_demand = self._soc_clamp(p_reg_demand, soc_current)
+        # ---- 2. SOC recovery bias on the base setpoint ----
+        # Small proportional pull toward SOC_terminal, fired every step
+        # (not just when activation is idle). recovery > 0 means "want to
+        # charge more", i.e. a NEGATIVE addition to P_net.
+        p_recovery = rp.recovery_gain * (bp.SOC_terminal - soc_current) * P_max
+        p_net_biased = setpoint_pnet - p_recovery
 
-        # ---- 3. SOC recovery bias when idle ----
-        # When the grid is not asking for regulation, gently nudge SOC
-        # toward the terminal target. Recovery > 0 means "want to charge",
-        # which is a NEGATIVE addition to net power.
-        if abs(activation_signal) < 1e-6:
-            p_recovery = rp.recovery_gain * (bp.SOC_terminal - soc_current) * P_max
-            p_reg_demand -= p_recovery
+        # ---- 3. Defensive absolute-power clip ----
+        # The plant will also clip, but bounding here keeps u_command
+        # interpretable and the trace symmetric.
+        p_net_clipped = float(np.clip(p_net_biased, -P_max, P_max))
 
-        # ---- 4. Combine setpoint + activation demand into a single signed P_net ----
-        p_net = setpoint_pnet + p_reg_demand
+        return np.array([p_net_clipped, p_reg_safe])
 
-        # ---- 5. Runtime power limit |P_net| <= P_max ----
-        # P_reg_committed is a contract, not a separate power channel.
-        # The battery has one physical current = P_net at any instant.
-        # The EMS planning layer guarantees |setpoint| + P_reg <= P_max,
-        # so the runtime PI just enforces the absolute battery limit.
-        p_net_clipped = float(np.clip(p_net, -P_max, P_max))
-
-        # The plant will additionally apply SOC headroom limiting; we don't
-        # duplicate that logic here. The plant returns the actually-applied
-        # power so accounting (Bug C fix) sees physical reality.
-
-        # ---- 6. Delivered regulation = the activation-driven delta ----
-        p_delivered = p_net_clipped - setpoint_pnet
-
-        u_command = np.array([p_net_clipped, p_reg_committed])
-        return u_command, p_delivered
-
-    def _soc_clamp(self, p_reg_demand: float, soc: float) -> float:
-        """Apply SOC-based safety scaling to the regulation demand."""
+    def _soc_clamp_committed(self, p_reg: float, soc: float) -> float:
+        """Linearly scale the committed FCR capacity toward zero as SOC
+        approaches either bound. Symmetric in SOC — any activation can
+        be the direction that hurts, so we protect both sides."""
         rp = self._rp
 
-        if p_reg_demand > 0:
-            # Up-regulation (discharge): limited by low SOC
-            if soc <= rp.soc_cutoff_low:
-                return 0.0
-            if soc < rp.soc_safety_low:
-                scale = (soc - rp.soc_cutoff_low) / (rp.soc_safety_low - rp.soc_cutoff_low)
-                return p_reg_demand * scale
-        elif p_reg_demand < 0:
-            # Down-regulation (charge): limited by high SOC
-            if soc >= rp.soc_cutoff_high:
-                return 0.0
-            if soc > rp.soc_safety_high:
-                scale = (rp.soc_cutoff_high - soc) / (rp.soc_cutoff_high - rp.soc_safety_high)
-                return p_reg_demand * scale
-
-        return p_reg_demand
+        if soc <= rp.soc_cutoff_low or soc >= rp.soc_cutoff_high:
+            return 0.0
+        if soc < rp.soc_safety_low:
+            scale = (soc - rp.soc_cutoff_low) / (rp.soc_safety_low - rp.soc_cutoff_low)
+            return p_reg * scale
+        if soc > rp.soc_safety_high:
+            scale = (rp.soc_cutoff_high - soc) / (rp.soc_cutoff_high - rp.soc_safety_high)
+            return p_reg * scale
+        return p_reg
 
     def reset(self) -> None:
-        """Reset controller state (no-op for feedforward)."""
+        """Reset controller state (no-op)."""
         pass

@@ -946,9 +946,13 @@ def main() -> None:
             "mpc_solver_failures": int(np.sum(agg[s]["mpc_failures"])),
             "avg_mpc_solve_time_s": float(np.mean(agg[s]["wall_times"])),
             "loss_days": int(np.sum(np.array(agg[s]["profits"]) < 0)),
-            "win_rate_vs_rule_based": float(
-                np.mean(np.array(agg[s]["profits"]) > np.array(agg["rule_based"]["profits"]))
-            ) if s != "rule_based" else None,
+            "win_rate_vs_rule_based": (
+                float(np.mean(
+                    np.array(agg[s]["profits"]) > np.array(agg["rule_based"]["profits"])
+                ))
+                if ("rule_based" in agg and s != "rule_based")
+                else None
+            ),
         }
 
     # Per-day profit arrays (for charts)
