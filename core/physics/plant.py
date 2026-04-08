@@ -578,27 +578,38 @@ class BatteryPlant:
         SOH = self._x[1]
         E_eff = SOH * bp.E_nom_kwh  # effective capacity [kWh]
 
-        # ---- 1. Runtime power limit |P_net| <= P_max ----
+        # ---- Local helper: clip P_net to both P_max and SOC headroom ----
+        # Used twice: once for the base setpoint alone (to find the base
+        # dispatch the battery can actually do), and once for the setpoint
+        # plus activation (to find the total dispatch). The delta between
+        # them is the FCR portion actually delivered.
+        def _clip_with_soc(p: float) -> float:
+            p = float(np.clip(p, -bp.P_max_kw, bp.P_max_kw))
+            if p > 0.0:
+                max_dis = (SOC - bp.SOC_min) * E_eff * bp.eta_discharge / dt_h
+                return min(p, max(0.0, max_dis))
+            if p < 0.0:
+                max_chg = (bp.SOC_max - SOC) * E_eff / (bp.eta_charge * dt_h)
+                return max(p, -max(0.0, max_chg))
+            return 0.0
+
+        # ---- 1. Clip the base setpoint (no activation yet) ----
         # P_reg_committed is a CONTRACT, not a separate power channel.
         # The battery has ONE physical current = P_net at any instant.
-        # The EMS planning layer ensures the worst-case activation fits
-        # in this budget.
         P_net_setpoint = float(u[0])
         P_reg = float(np.clip(u[1], 0.0, bp.P_max_kw))
+        P_net_setpoint_clipped = _clip_with_soc(P_net_setpoint)
+
+        # ---- 2. Add activation on top of the (already-clipped) base ----
         # Plant-internal activation tracking (RF1). On real hardware this
         # is the BESS controller's droop loop running at kHz cadence.
-        P_net_with_activation = P_net_setpoint + activation_k * P_reg
-        P_net = float(np.clip(P_net_with_activation, -bp.P_max_kw, bp.P_max_kw))
-
-        # ---- 2. SOC headroom (pre-integration limiting) ----
-        if P_net > 0.0:
-            # Discharge: don't go below SOC_min
-            max_dis_kw = (SOC - bp.SOC_min) * E_eff * bp.eta_discharge / dt_h
-            P_net = min(P_net, max(0.0, max_dis_kw))
-        elif P_net < 0.0:
-            # Charge: don't exceed SOC_max
-            max_chg_kw = (bp.SOC_max - SOC) * E_eff / (bp.eta_charge * dt_h)
-            P_net = max(P_net, -max(0.0, max_chg_kw))
+        # Two-pass clipping correctly attributes SOC/P_max clipping to
+        # the *activation* portion, not the base dispatch: any shortfall
+        # in p_delivered below activation_k * P_reg is real FCR
+        # undelivery, not an artifact of the base schedule hitting a
+        # bound.
+        desired_activation_delta = activation_k * P_reg
+        P_net = _clip_with_soc(P_net_setpoint_clipped + desired_activation_delta)
 
         # ---- 3. Decompose to (chg, dis, reg) for the internal ODE ----
         # Exactly one of (P_chg, P_dis) is nonzero — no wash trade possible.
@@ -626,10 +637,11 @@ class BatteryPlant:
         self._x = x_new.copy()
         y_meas = self.get_measurement()
         u_applied = np.array([P_net, P_reg])
-        # RF1: p_delivered is the FCR power the plant actually served.
-        # Signed; the ledger uses |p_delivered| vs |activation * P_reg| to
-        # compute delivery score and penalty.
-        p_delivered = float(P_net - P_net_setpoint)
+        # p_delivered is the FCR power the plant actually served — i.e.
+        # the difference between total dispatch and the clipped base
+        # dispatch. Signed. The ledger uses |p_delivered| vs
+        # |activation * P_reg| to compute delivery score and penalty.
+        p_delivered = float(P_net - P_net_setpoint_clipped)
         return self._x.copy(), y_meas, u_applied, p_delivered
 
     def get_measurement(self) -> np.ndarray:
@@ -833,7 +845,7 @@ class BatteryPack:
         dt = self.tp.dt_sim
         dt_h = dt / 3600.0
 
-        # ---- 1. Runtime power limit |P_net| <= P_max (single battery current) ----
+        # ---- 1. Runtime power limit + SOC headroom (worst-case cell) ----
         # SOC headroom uses the worst-case cell so the weakest cell stays in bounds.
         cell_states = self.get_cell_states()
         soc_min_cell = float(np.min(cell_states[:, 0]))
@@ -841,20 +853,23 @@ class BatteryPack:
         soh_min_cell = float(np.min(cell_states[:, 1]))
         E_eff_pack = soh_min_cell * bp.E_nom_kwh
 
+        def _clip_with_soc(p: float) -> float:
+            p = float(np.clip(p, -bp.P_max_kw, bp.P_max_kw))
+            if p > 0.0:
+                max_dis = (soc_min_cell - bp.SOC_min) * E_eff_pack * bp.eta_discharge / dt_h
+                return min(p, max(0.0, max_dis))
+            if p < 0.0:
+                max_chg = (bp.SOC_max - soc_max_cell) * E_eff_pack / (bp.eta_charge * dt_h)
+                return max(p, -max(0.0, max_chg))
+            return 0.0
+
         P_net_setpoint = float(u[0])
         P_reg = float(np.clip(u[1], 0.0, bp.P_max_kw))
-        # RF1: plant-internal activation tracking at pack boundary.
-        P_net_with_activation = P_net_setpoint + activation_k * P_reg
-        P_net = float(np.clip(P_net_with_activation, -bp.P_max_kw, bp.P_max_kw))
-
-        if P_net > 0.0:
-            # Discharge: limited by the cell closest to SOC_min
-            max_dis_kw = (soc_min_cell - bp.SOC_min) * E_eff_pack * bp.eta_discharge / dt_h
-            P_net = min(P_net, max(0.0, max_dis_kw))
-        elif P_net < 0.0:
-            # Charge: limited by the cell closest to SOC_max
-            max_chg_kw = (bp.SOC_max - soc_max_cell) * E_eff_pack / (bp.eta_charge * dt_h)
-            P_net = max(P_net, -max(0.0, max_chg_kw))
+        # Two-pass clip: first the base setpoint, then the setpoint plus
+        # activation. Delta between them = FCR portion the plant actually
+        # served (attribution fix for p_delivered).
+        P_net_setpoint_clipped = _clip_with_soc(P_net_setpoint)
+        P_net = _clip_with_soc(P_net_setpoint_clipped + activation_k * P_reg)
 
         # ---- 2. Decompose to chg/dis at the pack level ----
         if P_net >= 0.0:
@@ -892,7 +907,7 @@ class BatteryPack:
         x_pack = self.get_state()
         y_meas = self._make_measurement(x_pack)
         u_applied = np.array([P_net, P_reg])
-        p_delivered = float(P_net - P_net_setpoint)
+        p_delivered = float(P_net - P_net_setpoint_clipped)
         return x_pack, y_meas, u_applied, p_delivered
 
     def get_state(self) -> np.ndarray:
