@@ -239,6 +239,112 @@ actually realised despite real-world disturbance."
 
 ---
 
+**Simulator actuation realism audit (2026-04-15).** Triggered by the
+observation that `deterministic_lp` (no PI, no MPC, no controller of any
+kind) hits 100% delivery score in the big experiment. End-to-end audit
+of [core/simulator/core.py](core/simulator/core.py),
+[core/pi/regulation.py](core/pi/regulation.py),
+[core/mpc/economic.py](core/mpc/economic.py),
+[core/physics/plant.py](core/physics/plant.py),
+[core/estimators/ekf.py](core/estimators/ekf.py),
+[core/markets/activation.py](core/markets/activation.py).
+
+**Diagnosis: the simulator hands strategies the raw, ground-truth,
+sub-second activation signal with zero latency and zero noise.** Every
+delivery-related result is on a cheating baseline.
+
+The cheat is concentrated in exactly one channel and one operation:
+
+- **`activation[k]` is read raw at every PI step (~4 s).**
+  - [core/simulator/core.py:207](core/simulator/core.py#L207)
+    `activation_k = float(activation[k])`
+  - Passed unchanged to `_open_loop_dispatch` for `rule_based`,
+    `deterministic_lp`, `ems_clamps` ([core.py:216-219](core/simulator/core.py#L216-L219))
+  - Passed unchanged to `RegulationController.compute(activation_signal=activation_k, ...)`
+    for `ems_pi`, `tracking_mpc`, `economic_mpc` ([core.py:209-214](core/simulator/core.py#L209-L214))
+  - Used inside `_open_loop_dispatch` as `p_reg_demand = activation * p_reg_committed`
+    ([core.py:71](core/simulator/core.py#L71))
+  - Used inside `RegulationController.compute` as `p_reg_demand = activation_signal * p_reg_committed`
+    ([regulation.py:89](core/pi/regulation.py#L89))
+- **EconomicMPC additionally sees `activation[k-1]` at every MPC tick**
+  ([core.py:177](core/simulator/core.py#L177)), passed as
+  `recent_activation` to `solve_setpoint` and used in the OU persistence
+  forecast at [economic.py:165-168](core/mpc/economic.py#L165-L168).
+
+**This means a "dumb" LP strategy with zero feedback control achieves
+perfect delivery tracking** because the strategy layer is literally
+multiplying the ground-truth activation sample by the committed P_reg
+and handing it to the plant, which integrates it without any actuator
+dynamics. There is no plant-internal regulation controller — *all*
+activation tracking is done at the strategy layer, against perfect
+information.
+
+**What is NOT a cheat (verified by the audit, do not change):**
+- `plant.get_state()` (true 5-state) is called only for initial logging
+  and traces; no strategy consumes it
+- `plant.get_measurement()` adds Gaussian noise (SOC ±0.01, T ±0.5°C,
+  V ±1.0 V) — verified at [plant.py:618-620](core/physics/plant.py#L618-L620)
+- EKF receives noisy measurements and produces lagged estimates;
+  state_est is meaningfully different from ground truth
+- MPC and PI consume `state_est` (correct), not `plant.get_state()`
+  (would be a cheat)
+- `p_reg_committed` is held constant hourly (correct commitment model)
+- 5-scenario forecast with realized day held out (correct uncertainty
+  model)
+- 5-state plant ODE with Arrhenius thermal coupling and RC transients
+  is realistic
+
+**Secondary cheat (smaller, lives in the same fix):**
+The plant has **no actuator lag, no rate limit, no first-order-hold** on
+commanded power ([plant.py:516-602](core/physics/plant.py#L516-L602)).
+Commanded power is integrated directly into SOC. Real inverter dynamics
+are 10-50 ms; at the 4 s PI sample rate this barely matters but it is
+physically incorrect.
+
+**Architectural root cause.** On real hardware the layering is:
+- **Strategy layer** (hours/minutes): commits to markets, schedules energy
+- **Battery controller** (sub-second): tracks activation given the
+  commitment, respects constraints, delivers power
+- **Power electronics** (ms): translates commanded power to realized power
+
+The current simulator collapses all three jobs into the strategy layer.
+The fix is to push the "track activation given committed capacity" job
+into the plant where it physically belongs. Then strategies cannot cheat
+on information they never receive.
+
+**Implications for empirical findings.** All previous strategy-comparison
+results that involve delivery score are on a cheating baseline:
+- The 100% delivery score across all strategies (all subsets) is an
+  artifact of perfect feedforward, not a meritorious result
+- The "$0.04/day PI vs no-PI" gap on MPC strategies is also on a
+  cheating baseline — both with and without PI, all strategies are
+  doing perfect feedforward in the activation channel
+- The `tracking_mpc` 98.3% delivery in the stressed regime is the
+  *only* delivery-side signal that survives the cheat, because
+  tracking_mpc breaks for a different reason (its dead `P_reg`
+  variable distorts dispatch enough to occasionally miss the target)
+- **Profit numbers are still meaningful** for the energy arbitrage and
+  capacity revenue axes (no cheat there), but profit comparisons that
+  factor in delivery quality should be re-run after RF1.
+
+**Treatment: Realism Fix 1 (RF1).** See
+[docs/realism_fix_1_design.md](docs/realism_fix_1_design.md) (TBD next
+session). Push activation tracking into `BatteryPlant.step()`. Strategy
+layer outputs `(p_net_setpoint, p_reg_committed)`; plant internally
+computes `p_total = p_net_setpoint + activation_k × p_reg_committed`,
+applies clipping, integrates. Strategies never see `activation[k]`.
+PI controller's activation-tracking code path is deleted (PI's job
+shrinks to "SOC safety clamp + recovery bias"). MPC's `recent_activation`
+hint is removed; MPC plans against the *expected* activation
+(`expected_activation_frac`, already exists in EMSParams) and gains its
+edge from the EKF state estimate + scenario picker (Wow Factor 1 step D),
+not from peeking at the grid signal. Estimated scope: ~150 LOC across
+4 files. **Sequence: RF1 lands before Wow Factor 1 resumes**, because
+without RF1 the WF1 headline number cannot be defended on a
+delivery-quality axis.
+
+---
+
 **EMS planner audit findings (2026-04-07).** End-to-end audit of
 [core/planners/stochastic_ems.py](core/planners/stochastic_ems.py),
 [core/planners/deterministic_lp.py](core/planners/deterministic_lp.py),
