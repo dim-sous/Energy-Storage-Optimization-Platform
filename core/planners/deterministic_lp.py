@@ -8,11 +8,11 @@ coupling, no second-stage closed-loop controller.  Beating it in the v5
 comparison demonstrates that the v5 stack adds *real* value over what a
 buyer would otherwise procure.
 
-To make the baseline as defensible (charitable) as possible, we give it
-**perfect price foresight** over the 24-hour horizon.  Real vendors use
-forecasts and would do worse; perfect foresight makes the baseline
-strictly stronger, so any margin our economic MPC achieves over it is
-conservative.
+The LP is given the same forecast information as every other strategy:
+the probability-weighted mean of the forecast scenarios passed to
+``solve()``. The realized prices are held out and never seen by the
+planner; they enter only through the post-hoc accounting ledger. This
+matches the base.py protocol contract.
 
 Formulation
 -----------
@@ -263,10 +263,14 @@ class DeterministicLP:
                 eta_c * p_chg_ref[k] - p_dis_ref[k] / eta_d
             )
 
+        # `expected_profit` is the negated LP objective, which includes the
+        # L1 terminal-anchor slack penalty. Used only for the planner's own
+        # log line below; the comparative `total_profit` reported across
+        # strategies is computed independently by the simulator's ledger.
         expected_profit = float(-res.fun)
 
         logger.info(
-            "DeterministicLP solved: profit=$%.2f  |  SOC [%.3f -> %.3f]  |  N=%d",
+            "DeterministicLP solved: objective=$%.2f  |  SOC [%.3f -> %.3f]  |  N=%d",
             expected_profit, soc_ref[0], soc_ref[-1], N,
         )
 

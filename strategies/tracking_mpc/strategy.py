@@ -1,13 +1,16 @@
-"""TRACKING_MPC — sanity control. Stochastic EMS + tracking MPC.
+"""TRACKING_MPC — controlled-experiment baseline. Stochastic EMS + tracking MPC.
 
-NOT pitch-visible. The "old v5 stack". Demonstrates how a tracking-only
-MPC compares to the new economic MPC — if they're equal, the economic
-formulation isn't doing useful work.
+NOT pitch-visible. Exists as a clean control point for the
+``economic_mpc`` comparison: same prediction model, same exogenous P_reg
+handling, same endurance constraint, same fallback. The two strategies
+differ in exactly one place — the cost function. Tracking MPC tracks
+the EMS plan in (SOC, P_chg, P_dis); economic MPC replaces those
+tracking terms with arbitrage profit, degradation cost, and a soft
+SOC anchor.
 
-Has a known F2 bug from the MPC pipeline audit (dead `P_reg` decision
-variable that the adapter discards). Kept as an empirical control;
-the bug is intentionally not fixed because the strategy's only role
-is "be a baseline that economic_mpc must demonstrably beat."
+If economic_mpc and tracking_mpc produce similar profits, the economic
+formulation isn't pulling its weight. If economic_mpc clearly wins, the
+extra complexity is justified.
 """
 
 from __future__ import annotations

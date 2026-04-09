@@ -210,9 +210,15 @@ class EconomicMPC:
             opti.subject_to(TEMP[k] >= thp.T_min - eps_temp[k])
 
         # Power-budget headroom: planned chg/dis must leave room for the
-        # committed reg power at the corresponding horizon step.
-        for j in range(Nc):
-            k = j  # j-th control action applies at step k=j (then blocked)
+        # committed reg power at the corresponding horizon step. Enforced
+        # over the FULL prediction horizon (not just the unblocked control
+        # window) — the EMS-committed P_reg can change cross-hour inside
+        # the horizon, and the held control values must stay feasible
+        # against those later commitments. Otherwise the MPC's predicted
+        # SOC trajectory propagates a physically infeasible plan in the
+        # blocked region.
+        for k in range(N):
+            j = min(k, Nc - 1)
             opti.subject_to(P_chg[j] + p_reg_committed_p[k] <= bp.P_max_kw)
             opti.subject_to(P_dis[j] + p_reg_committed_p[k] <= bp.P_max_kw)
 
@@ -345,7 +351,13 @@ class EconomicMPC:
             logger.warning("EconomicMPC failed (%s); falling back to TrackingMPC",
                            str(exc)[:200])
             self.last_solve_failed = True
-            # Tracking-MPC fallback so we never lose the EMS plan
+            # Tracking-MPC fallback so we never lose the EMS plan.
+            # Interface drift: TrackingMPC takes a 3-vector u_prev
+            # ([P_chg, P_dis, P_reg]); EconomicMPC stores only 2 entries
+            # because P_reg is exogenous here. Pad with 0.0 for the
+            # tracking call — the appended P_reg slot only feeds the
+            # tracking MPC's rate-of-change penalty on the (discarded)
+            # P_reg decision variable, so the value doesn't matter.
             u_cmd = self._tracking_fallback.solve(
                 x_est=x_est,
                 soc_ref=soc_ref,

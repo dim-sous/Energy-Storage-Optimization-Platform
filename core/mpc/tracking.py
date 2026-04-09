@@ -1,23 +1,38 @@
-"""Nonlinear tracking MPC with temperature constraints and regulation headroom.
+"""Nonlinear tracking MPC for closed-loop execution of the EMS plan.
 
-v5_regulation_activation: uses 2-state prediction model (SOC, T) with SOH
-frozen as a parameter.  SOH changes ~0.001 over the 1-hour MPC horizon —
-negligible for control.  The EMS handles SOH economics at the hourly level.
+This MPC's job is to **execute the EMS plan faithfully** at the
+closed-loop layer, accounting for live state feedback and physical
+feasibility under FCR activation. It is NOT a profit maximizer — that
+is `EconomicMPC`'s role. The two strategies differ in exactly one
+place: the cost function. They share the same prediction model, the
+same exogenous P_reg handling, the same endurance constraint, and the
+same fallback path. That is what makes the two-strategy comparison a
+controlled experiment instead of a strawman.
 
-Hierarchical estimation-control separation:
-  - EKF/MHE: 5-state (SOC, SOH, T, V_rc1, V_rc2) — full observability model
-  - MPC:     2-state (SOC, T) + SOH parameter      — fast, tractable prediction
-  - EMS:     3-state (SOC, SOH, T)                  — coarse hourly planning
+Architecture
+------------
+- 2-state prediction model (SOC, T) with SOH frozen as a parameter.
+  SOH changes ~0.001 over a 1-hour horizon — negligible for control.
+- ``P_reg`` is exogenous, set hourly by the EMS and ZOH-expanded across
+  the MPC horizon. The MPC does not optimise P_reg; it plans P_chg /
+  P_dis to keep SOC feasible under the EMS reg commitment.
+- Endurance constraint: at every predicted step the SOC must have
+  enough headroom to sustain the committed P_reg for
+  ``mp.endurance_hours_mpc`` hours in either direction. Soft constraint
+  with the standard slack penalty.
 
-The MPC objective combines SOC tracking (closed-loop state feedback) with
-power reference tracking (economic timing from EMS) and rate-of-change
-smoothness.  Temperature is predicted for constraint enforcement only
-(no tracking term — the soft constraint handles thermal safety).
+Cost terms
+----------
+  Q_soc * (SOC - soc_ref)**2                  closed-loop state tracking
+  R_power * (P_chg - p_chg_ref)**2 + ...      power reference tracking
+  R_delta * (P_chg - P_chg_prev)**2 + ...     rate-of-change smoothness
+  Q_terminal * (SOC[N] - soc_ref[N])**2       terminal SOC anchor
+  slack_penalty * eps**2 (SOC, T, endurance)  feasibility slacks
 
 Runs every ``dt_mpc`` = 60 s.
 
 States:  x = [SOC, T]  (SOH frozen as parameter)
-Inputs:  u = [P_chg, P_dis, P_reg]   (all >= 0, kW)
+Inputs:  u = [P_chg, P_dis]    (P_reg is exogenous parameter)
 """
 
 from __future__ import annotations
@@ -111,7 +126,6 @@ class TrackingMPC:
         # Warm-start caches
         self._prev_P_chg: np.ndarray | None = None
         self._prev_P_dis: np.ndarray | None = None
-        self._prev_P_reg: np.ndarray | None = None
         self._prev_SOC: np.ndarray | None = None
         self._prev_TEMP: np.ndarray | None = None
 
@@ -131,13 +145,16 @@ class TrackingMPC:
         opti = ca.Opti()
 
         # ---- Decision variables ----
+        # P_reg is NOT a decision variable — it's set hourly by the EMS
+        # and ZOH-expanded across the MPC horizon. The MPC plans
+        # P_chg/P_dis to keep SOC feasible under the EMS reg commitment.
         P_chg = opti.variable(Nc)
         P_dis = opti.variable(Nc)
-        P_reg = opti.variable(Nc)
         SOC = opti.variable(N + 1)
         TEMP = opti.variable(N + 1)
-        eps = opti.variable(N + 1)         # Soft SOC slack
-        eps_temp = opti.variable(N + 1)    # Soft temperature slack
+        eps = opti.variable(N + 1)             # SOC bound slack
+        eps_temp = opti.variable(N + 1)        # Temperature bound slack
+        eps_endurance = opti.variable(N + 1)   # Endurance headroom slack
 
         # ---- Parameters (set each solve) ----
         soc_0 = opti.parameter()
@@ -146,8 +163,9 @@ class TrackingMPC:
         soc_ref_p = opti.parameter(N + 1)
         p_chg_ref_p = opti.parameter(N)
         p_dis_ref_p = opti.parameter(N)
-        p_reg_ref_p = opti.parameter(N)
-        u_prev_p = opti.parameter(3)
+        # P_reg committed by EMS, ZOH per MPC step (exogenous)
+        p_reg_committed_p = opti.parameter(N)
+        u_prev_p = opti.parameter(2)       # last [P_chg, P_dis]
 
         # ---- 2-state integrator with SOH parameter ----
         F_mpc = _build_2state_integrator(
@@ -164,65 +182,90 @@ class TrackingMPC:
         for k in range(N):
             j = min(k, Nc - 1)   # control horizon blocking
 
-            # Dynamics (2-state)
+            # Dynamics (2-state). Reg input is the EMS-committed value
+            # so the predicted thermal Joule heating accounts for it.
             x2_k = ca.vertcat(SOC[k], TEMP[k])
-            u_k = ca.vertcat(P_chg[j], P_dis[j], P_reg[j])
+            u_k = ca.vertcat(P_chg[j], P_dis[j], p_reg_committed_p[k])
             x2_next = F_mpc(x2_k, u_k, soh_p)
 
             opti.subject_to(SOC[k + 1] == x2_next[0])
             opti.subject_to(TEMP[k + 1] == x2_next[1])
 
-            # SOC tracking — closed-loop state feedback
+            # SOC tracking — closed-loop state feedback against EMS plan
             cost += mp.Q_soc * (SOC[k] - soc_ref_p[k]) ** 2
 
-            # Power tracking — economic timing signal from EMS
+            # Power tracking — execute the EMS arbitrage timing
             cost += mp.R_power * (
                 (P_chg[j] - p_chg_ref_p[k]) ** 2
                 + (P_dis[j] - p_dis_ref_p[k]) ** 2
-                + (P_reg[j] - p_reg_ref_p[k]) ** 2
             )
 
-            # Rate-of-change penalty
+            # Rate-of-change penalty (smoothness on the unblocked window)
             if k == 0:
                 cost += mp.R_delta * (
                     (P_chg[0] - u_prev_p[0]) ** 2
                     + (P_dis[0] - u_prev_p[1]) ** 2
-                    + (P_reg[0] - u_prev_p[2]) ** 2
                 )
             elif k < Nc:
                 cost += mp.R_delta * (
                     (P_chg[k] - P_chg[k - 1]) ** 2
                     + (P_dis[k] - P_dis[k - 1]) ** 2
-                    + (P_reg[k] - P_reg[k - 1]) ** 2
                 )
 
-        # Terminal cost
+        # Terminal SOC anchor
         cost += mp.Q_terminal * (SOC[N] - soc_ref_p[N]) ** 2
 
         # Soft-constraint penalties
         for k in range(N + 1):
             cost += mp.slack_penalty * eps[k] ** 2
             cost += mp.slack_penalty_temp * eps_temp[k] ** 2
+            cost += mp.slack_penalty * eps_endurance[k] ** 2
 
         opti.minimize(cost)
 
         # ---- Constraints ----
         opti.subject_to(opti.bounded(0.0, P_chg, bp.P_max_kw))
         opti.subject_to(opti.bounded(0.0, P_dis, bp.P_max_kw))
-        opti.subject_to(opti.bounded(0.0, P_reg, bp.P_max_kw * 0.3))
         opti.subject_to(eps >= 0)
         opti.subject_to(eps_temp >= 0)
+        opti.subject_to(eps_endurance >= 0)
 
+        # SOC and temperature bounds (soft, with their own slacks)
         for k in range(N + 1):
             opti.subject_to(SOC[k] >= bp.SOC_min - eps[k])
             opti.subject_to(SOC[k] <= bp.SOC_max + eps[k])
             opti.subject_to(TEMP[k] <= thp.T_max + eps_temp[k])
             opti.subject_to(TEMP[k] >= thp.T_min - eps_temp[k])
 
-        # Power budget
-        for j in range(Nc):
-            opti.subject_to(P_chg[j] + P_reg[j] <= bp.P_max_kw)
-            opti.subject_to(P_dis[j] + P_reg[j] <= bp.P_max_kw)
+        # Endurance headroom: at every predicted step the SOC must have
+        # room to sustain the committed P_reg for endurance_hours_mpc in
+        # either direction (up-reg discharge / down-reg charge). Soft.
+        # Reg power is indexed by min(k, N-1) since p_reg_committed_p
+        # has length N (one entry per dynamics step) while SOC has N+1.
+        t_end = mp.endurance_hours_mpc
+        for k in range(N + 1):
+            kp = min(k, N - 1)
+            margin_low = (
+                p_reg_committed_p[kp] * t_end / (bp.E_nom_kwh * bp.eta_discharge)
+            )
+            margin_high = (
+                p_reg_committed_p[kp] * t_end * bp.eta_charge / bp.E_nom_kwh
+            )
+            opti.subject_to(
+                SOC[k] >= bp.SOC_min + margin_low - eps_endurance[k]
+            )
+            opti.subject_to(
+                SOC[k] <= bp.SOC_max - margin_high + eps_endurance[k]
+            )
+
+        # Power budget: planned chg/dis must leave room for the committed
+        # reg power at the corresponding horizon step. Enforced over the
+        # full prediction horizon (not just the unblocked window) so the
+        # blocked region cannot propagate a physically infeasible plan.
+        for k in range(N):
+            j = min(k, Nc - 1)
+            opti.subject_to(P_chg[j] + p_reg_committed_p[k] <= bp.P_max_kw)
+            opti.subject_to(P_dis[j] + p_reg_committed_p[k] <= bp.P_max_kw)
 
         # ---- Solver options ----
         opts = {
@@ -255,18 +298,18 @@ class TrackingMPC:
         self._opti = opti
         self._P_chg = P_chg
         self._P_dis = P_dis
-        self._P_reg = P_reg
         self._SOC = SOC
         self._TEMP = TEMP
         self._eps = eps
         self._eps_temp = eps_temp
+        self._eps_endurance = eps_endurance
         self._soc_0 = soc_0
         self._soh_p = soh_p
         self._temp_0 = temp_0
         self._soc_ref_p = soc_ref_p
         self._p_chg_ref_p = p_chg_ref_p
         self._p_dis_ref_p = p_dis_ref_p
-        self._p_reg_ref_p = p_reg_ref_p
+        self._p_reg_committed_p = p_reg_committed_p
         self._u_prev_p = u_prev_p
 
     # ------------------------------------------------------------------
@@ -280,26 +323,34 @@ class TrackingMPC:
         p_chg_ref: np.ndarray,
         p_dis_ref: np.ndarray,
         p_reg_ref: np.ndarray,
+        p_reg_committed_horizon: np.ndarray | None = None,
         u_prev: np.ndarray | None = None,
     ) -> np.ndarray:
-        """Compute the MPC control action.
+        """Compute the tracking-MPC control action.
 
         Parameters
         ----------
-        x_est     : ndarray (5,)   [SOC_est, SOH_est, T_est, V_rc1_est, V_rc2_est]
-                    SOH is used as a frozen parameter. V_rc estimates are ignored.
-        soc_ref   : ndarray (N+1,)
-        p_chg_ref : ndarray (N,)
-        p_dis_ref : ndarray (N,)
-        p_reg_ref : ndarray (N,)
-        u_prev    : ndarray (3,) or None
+        x_est                    : ndarray (5,) EKF estimate; SOH frozen, V_rc ignored
+        soc_ref                  : ndarray (N+1,) EMS SOC reference
+        p_chg_ref/p_dis_ref      : ndarray (N,)   EMS chg/dis references
+        p_reg_ref                : ndarray (N,)   EMS reg references (kept
+                                   for interface compatibility; folded into
+                                   p_reg_committed_horizon if that arg is
+                                   None — they are equal in normal use)
+        p_reg_committed_horizon  : ndarray (N,)   EMS-committed FCR power
+                                   ZOH per MPC step. Used by both the
+                                   dynamics prediction and the endurance
+                                   constraint.
+        u_prev                   : ndarray (2 or 3,) previous applied
+                                   [P_chg, P_dis] (any third entry is
+                                   ignored, kept for back-compat with
+                                   length-3 callers).
 
         Returns
         -------
-        u_cmd : ndarray (3,)   [P_chg, P_dis, P_reg]
+        u_cmd : ndarray (3,)   [P_chg, P_dis, P_reg]  (P_reg = committed)
         """
         N = self.mp.N_mpc
-        Nc = self.mp.Nc_mpc
         opti = self._opti
         thp = self.thp
 
@@ -308,12 +359,23 @@ class TrackingMPC:
         p_dis_ref = self._pad(p_dis_ref, N)
         p_reg_ref = self._pad(p_reg_ref, N)
 
+        # Default the committed reg horizon to the (legacy) p_reg_ref —
+        # callers that pre-date the explicit committed-horizon argument
+        # were passing the same EMS reg array under both names.
+        if p_reg_committed_horizon is None:
+            p_reg_committed = p_reg_ref
+        else:
+            p_reg_committed = self._pad(p_reg_committed_horizon, N)
+
         soc_0_val = float(np.clip(x_est[0], self.bp.SOC_min, self.bp.SOC_max))
         soh_val = float(np.clip(x_est[1], 0.5, 1.0))
         temp_0_val = float(np.clip(x_est[2], thp.T_min - 5.0, thp.T_max + 5.0))
 
         if u_prev is None:
-            u_prev = np.array([p_chg_ref[0], p_dis_ref[0], p_reg_ref[0]])
+            u_prev = np.array([p_chg_ref[0], p_dis_ref[0]])
+        else:
+            # Old callers may pass length-3 [chg, dis, reg]; truncate.
+            u_prev = np.asarray(u_prev, dtype=float)[:2]
 
         # Set parameters
         opti.set_value(self._soc_0, soc_0_val)
@@ -322,24 +384,23 @@ class TrackingMPC:
         opti.set_value(self._soc_ref_p, soc_ref)
         opti.set_value(self._p_chg_ref_p, p_chg_ref)
         opti.set_value(self._p_dis_ref_p, p_dis_ref)
-        opti.set_value(self._p_reg_ref_p, p_reg_ref)
+        opti.set_value(self._p_reg_committed_p, p_reg_committed)
         opti.set_value(self._u_prev_p, u_prev)
 
         # Warm-start
         if self._prev_P_chg is not None:
             opti.set_initial(self._P_chg, self._prev_P_chg)
             opti.set_initial(self._P_dis, self._prev_P_dis)
-            opti.set_initial(self._P_reg, self._prev_P_reg)
             opti.set_initial(self._SOC, self._prev_SOC)
             opti.set_initial(self._TEMP, self._prev_TEMP)
         else:
             opti.set_initial(self._P_chg, 0.0)
             opti.set_initial(self._P_dis, 0.0)
-            opti.set_initial(self._P_reg, 0.0)
             opti.set_initial(self._SOC, soc_ref)
             opti.set_initial(self._TEMP, temp_0_val)
         opti.set_initial(self._eps, 0.0)
         opti.set_initial(self._eps_temp, 0.0)
+        opti.set_initial(self._eps_endurance, 0.0)
 
         # Solve
         try:
@@ -348,16 +409,16 @@ class TrackingMPC:
 
             pc = np.array(sol.value(self._P_chg)).flatten()
             pd = np.array(sol.value(self._P_dis)).flatten()
-            pr = np.array(sol.value(self._P_reg)).flatten()
             soc_opt = np.array(sol.value(self._SOC)).flatten()
             temp_opt = np.array(sol.value(self._TEMP)).flatten()
 
-            u_cmd = np.array([pc[0], pd[0], pr[0]])
+            # P_reg returned to caller is the EMS-committed value at k=0
+            # (MPC does not choose it; it forwards what's committed).
+            u_cmd = np.array([pc[0], pd[0], float(p_reg_committed[0])])
 
             # Cache shifted solution for warm-start
             self._prev_P_chg = np.append(pc[1:], pc[-1])
             self._prev_P_dis = np.append(pd[1:], pd[-1])
-            self._prev_P_reg = np.append(pr[1:], pr[-1])
             self._prev_SOC = np.append(soc_opt[1:], soc_opt[-1])
             self._prev_TEMP = np.append(temp_opt[1:], temp_opt[-1])
 

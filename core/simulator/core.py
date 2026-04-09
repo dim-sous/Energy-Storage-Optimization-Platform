@@ -103,8 +103,10 @@ def run_simulation(
     plan: Plan | None = None
     setpoint_pnet = 0.0
     setpoint_preg = 0.0
+    # Last applied (P_chg, P_dis, P_reg) in the EKF/MPC's 3-vector
+    # convention. Updated each PI step from u_applied; consumed by
+    # both the EKF (predict step) and the MPC (rate-of-change penalty).
     u_prev_3 = np.zeros(3)
-    last_u_applied_3 = np.zeros(3)
     mpc_idx = 0
 
     # ---- Main loop ----
@@ -139,7 +141,7 @@ def run_simulation(
             t0_est = time.perf_counter()
             y_meas = plant.get_measurement()
             if k > 0:
-                state_est = ekf.step(last_u_applied_3, y_meas)
+                state_est = ekf.step(u_prev_3, y_meas)
             est_solve_time = time.perf_counter() - t0_est
 
             # MPC solve (or use plan setpoint directly)
@@ -203,15 +205,15 @@ def run_simulation(
             cells=cells_now,
         )
 
-        # 6. Update u_prev for the EKF: needs the legacy (chg, dis, reg) shape.
-        # Decompose u_applied[0] (signed P_net) into non-negative chg/dis.
+        # 6. Update u_prev_3 for the next EKF / MPC call. The EKF takes
+        # the (chg, dis, reg) shape, so decompose the signed P_net into
+        # non-negative (chg, dis) — exactly one is nonzero per row.
         p_net_applied = u_applied[0]
         p_reg_applied = u_applied[1]
         if p_net_applied >= 0:
-            last_u_applied_3 = np.array([0.0, p_net_applied, p_reg_applied])
+            u_prev_3 = np.array([0.0, p_net_applied, p_reg_applied])
         else:
-            last_u_applied_3 = np.array([-p_net_applied, 0.0, p_reg_applied])
-        u_prev_3 = last_u_applied_3.copy()
+            u_prev_3 = np.array([-p_net_applied, 0.0, p_reg_applied])
 
     # Fill the last EKF slot (loop wrote slots 0..N_mpc-1; final slot
     # would otherwise stay zero and confuse the audit / visualization).

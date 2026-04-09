@@ -266,6 +266,16 @@ class MPCParams:
     w_pen: float = 1.0                 # non-delivery penalty
     w_deg: float = 1.0                 # degradation cost
 
+    # ---- TrackingMPC: short-horizon FCR delivery headroom ----
+    # The MPC enforces enough SOC headroom at every predicted step to
+    # sustain the EMS-committed P_reg in either direction for this many
+    # hours. Defaults to 5 minutes — short enough that the MPC can stay
+    # close to the EMS strategic plan without duplicating the EMS's own
+    # 30-minute endurance, long enough to absorb a typical OU activation
+    # burst (the OU correlation time is ~5 min). Soft constraint with the
+    # standard slack_penalty.
+    endurance_hours_mpc: float = 5.0 / 60.0
+
 
 @dataclass(frozen=True)
 class RegulationParams:

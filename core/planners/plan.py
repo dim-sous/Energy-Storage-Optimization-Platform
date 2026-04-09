@@ -10,10 +10,9 @@ so the rest of the simulator (PI controller, plant) can use a single
 value instead of the legacy (chg, dis) tuple. Wash trades are impossible
 to express in this representation.
 
-Wow Factor 1 (2026-04-15): `Plan` now also carries the per-scenario
-second-stage trajectories from the EMS stochastic solve, so the MPC
-layer can pick which scenario to anchor against instead of tracking
-the probability-weighted average. See docs/wow_factor_1_design.md.
+`Plan` also carries the per-scenario second-stage trajectories from the
+EMS stochastic solve, so the MPC layer can pick which scenario to anchor
+against instead of tracking the probability-weighted average.
 """
 
 from __future__ import annotations

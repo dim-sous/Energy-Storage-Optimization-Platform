@@ -214,11 +214,13 @@ class EconomicEMS:
                 SOH[s][N] - soh_init
             ) ** 2
 
-            # Soft SOC constraint penalty
+            # Soft constraint penalties. The 1e5 weight is intentionally
+            # smaller than MPCParams.slack_penalty=1e6: the EMS solves a
+            # larger scenario-coupled problem and needs softer constraints
+            # to keep IPOPT well-conditioned. The MPC's tighter weight is
+            # appropriate for its smaller, deterministic per-step problem.
             for k in range(N + 1):
                 scenario_profit -= 1e5 * eps_soc[s][k] ** 2
-
-            # Soft endurance constraint penalty
             for k in range(N):
                 scenario_profit -= 1e5 * eps_endurance[s][k] ** 2
 
@@ -311,10 +313,14 @@ class EconomicEMS:
         soh_ref   = (w[:, None] * scenarios_soh).sum(axis=0)
         temp_ref  = (w[:, None] * scenarios_temp).sum(axis=0)
 
+        # As with DeterministicLP, this is the negated NLP objective and
+        # includes the soft slack penalties + the terminal SOC/SOH penalty
+        # terms. Used for the planner's own log line; the comparative
+        # `total_profit` is computed by the simulator's ledger.
         expected_profit = float(-sol.value(total_obj))
 
         logger.info(
-            "EMS solved: expected profit = $%.2f  |  "
+            "EMS solved: objective = $%.2f  |  "
             "SOC [%.3f -> %.3f]  |  SOH [%.6f -> %.6f]  |  T [%.1f -> %.1f]",
             expected_profit,
             soc_ref[0], soc_ref[-1],

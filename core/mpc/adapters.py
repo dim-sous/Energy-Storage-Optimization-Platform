@@ -93,14 +93,14 @@ class TrackingMPCAdapter:
             p_chg_ref=pc_win,
             p_dis_ref=pd_win,
             p_reg_ref=pr_win,
+            p_reg_committed_horizon=pr_win,
             u_prev=u_prev_3,
         )
-        # Convert (chg, dis) to signed P_net. P_reg comes from the EMS
-        # plan, not the MPC's decision variable: TrackingMPC has an
-        # arbitrary [0, 0.3*P_max] cap on its internal P_reg that's a
-        # sanity bound, not a market contract.
+        # P_reg in u_cmd_3 is already the EMS-committed value at k=0
+        # (TrackingMPC no longer decides P_reg — it's exogenous, just
+        # like in EconomicMPC).
         p_net = float(u_cmd_3[1] - u_cmd_3[0])
-        p_reg = float(pr_win[0])
+        p_reg = float(u_cmd_3[2])
         return p_net, p_reg, self._mpc.last_solve_failed
 
 
