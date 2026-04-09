@@ -17,90 +17,101 @@ directly.
 ## Optimal Control Problem
 
 This is a **deterministic NLP solved at 60 s cadence** with a 1-hour
-horizon and control-horizon blocking after $N_c = 20$ steps.
+prediction horizon and control-horizon blocking after `Nc = 20` steps.
 
 ### Notation
 
-| Symbol | Meaning | Units |
-|---|---|---|
-| $N$ | prediction horizon | (= 60 MPC steps = 60 min) |
-| $N_c$ | control horizon (decisions are blocked beyond $N_c$) | (= 20 MPC steps = 20 min) |
-| $\Delta t_h$ | step size in hours | h (= $1/60$) |
-| $\Delta t_s$ | step size in seconds | s (= 60) |
-| $k$ | prediction step index, $k = 0, \dots, N-1$ | — |
-| $j(k) = \min(k, N_c - 1)$ | control-blocking index | — |
-| $\text{soc}_0, \text{temp}_0$ | initial state from EKF (set per solve) | — |
-| $\overline{\text{soh}}$ | EKF SOH estimate, **frozen** as a parameter | — |
-| $\hat{p}^e_k$ | forecast-mean energy price for step $k$ | \$/kWh |
-| $\bar{P}_{\text{reg},k}$ | committed FCR power, ZOH-expanded from EMS plan | kW |
-| $\text{soc}^{\text{ref}}_k$ | EMS SOC reference (current implementation: end-of-hour value, repeated) | — |
-| $u^{\text{prev}} = (P^{\text{prev}}_{\text{chg}}, P^{\text{prev}}_{\text{dis}})$ | last applied controls | kW |
+| Symbol             | Meaning                                                | Units            |
+|--------------------|--------------------------------------------------------|------------------|
+| `N`                | prediction horizon                                     | (= 60 MPC steps = 60 min) |
+| `Nc`               | control horizon (decisions are blocked beyond Nc)      | (= 20 MPC steps = 20 min) |
+| `Δt_h`             | step size in hours                                     | h (= 1/60)       |
+| `Δt_s`             | step size in seconds                                   | s (= 60)         |
+| `k`                | prediction step index, k = 0..N−1                      | —                |
+| `j(k)`             | control-blocking index, `j(k) = min(k, Nc − 1)`        | —                |
+| `soc_0`,`temp_0`   | initial state from EKF (set per solve)                 | —                |
+| `soh̄`              | EKF SOH estimate, **frozen** as a parameter            | —                |
+| `p̂_e[k]`           | forecast-mean energy price for step k                  | \$/kWh           |
+| `P̄_reg[k]`         | committed FCR power, ZOH-expanded from the EMS plan    | kW               |
+| `soc_ref[k]`       | EMS SOC reference (current implementation: end-of-hour value, repeated) | — |
+| `u_prev`           | last applied controls `(P_chg_prev, P_dis_prev)`       | kW               |
 
-| Symbol | Weight | Default value |
-|---|---|---|
-| $w_e$ | energy-arbitrage weight | $1$ |
-| $w_{\text{deg}}$ | degradation-cost weight | $1$ |
-| $Q^{\text{soc}}_{\text{anchor}}$ | per-step SOC anchor | $10$ |
-| $Q^{\text{term}}_{\text{econ}}$ | terminal SOC anchor | $10^3$ |
-| $R^{\Delta}_{\text{econ}}$ | rate-of-change penalty | $10^{-2}$ |
-| $\lambda_{\text{soc}}$ | SOC slack penalty | $10^6$ |
-| $\lambda_{\text{temp}}$ | temperature slack penalty | $10^7$ |
+| Symbol             | Meaning                                                | Default          |
+|--------------------|--------------------------------------------------------|------------------|
+| `w_e`              | energy-arbitrage weight                                | 1                |
+| `w_deg`            | degradation-cost weight                                | 1                |
+| `Q_soc_anchor`     | per-step SOC anchor                                    | 10               |
+| `Q_term_econ`      | terminal SOC anchor                                    | 1e3              |
+| `R_delta_econ`     | rate-of-change penalty                                 | 1e−2             |
+| `λ_soc`            | SOC slack penalty                                      | 1e6              |
+| `λ_temp`           | temperature slack penalty                              | 1e7              |
 
 ### Decision variables
 
-$$
-\begin{aligned}
-P_{\text{chg},j}, \, P_{\text{dis},j} &\in [0, P_{\max}], &\quad j &= 0, \dots, N_c - 1 \\
-\text{SOC}_k, \, T_k &\in \mathbb{R}, &\quad k &= 0, \dots, N \\
-\varepsilon_k &\geq 0, &\quad k &= 0, \dots, N \quad \text{(SOC slack)} \\
-\varepsilon^{\text{temp}}_k &\geq 0, &\quad k &= 0, \dots, N \quad \text{(temperature slack)}
-\end{aligned}
-$$
+```
+P_chg[j], P_dis[j] ∈ [0, P_max]      for j = 0..Nc−1
+SOC[k], T[k] ∈ ℝ                      for k = 0..N
+ε[k]      ≥ 0                         for k = 0..N           ← SOC slack
+ε_temp[k] ≥ 0                         for k = 0..N           ← temperature slack
+```
 
-For $k \geq N_c$, the control is **blocked**: the same
-$P_{\text{chg}, N_c-1}$ and $P_{\text{dis}, N_c-1}$ are reused. SOH is
-frozen at $\overline{\text{soh}}$, not a state. **$P_{\text{reg}}$ is
-not a decision variable** — it is the parameter $\bar{P}_{\text{reg},k}$.
+For `k ≥ Nc`, the control is **blocked**: the same `P_chg[Nc−1]` and
+`P_dis[Nc−1]` are reused. SOH is frozen at `soh̄`, not a state.
+**`P_reg` is not a decision variable** — it is the parameter `P̄_reg[k]`.
 
 ### Prediction model (2-state, frozen SOH)
 
-$$
-\begin{aligned}
-\frac{d\,\text{SOC}}{dt} &= \frac{\eta_c P_{\text{chg}} - P_{\text{dis}}/\eta_d}{\overline{\text{soh}} \cdot E_{\text{nom}} \cdot 3600} \\[1em]
-\frac{dT}{dt} &= \frac{Q_{\text{joule}}(P_{\text{net}}, T) - h_{\text{cool}}(T - T_{\text{amb}})}{C_{\text{thermal}}}
-\end{aligned}
-$$
+```
+state:  x = (SOC, T)
+inputs: P_chg[j(k)], P_dis[j(k)], P̄_reg[k]
 
-where $P_{\text{net}} = P_{\text{dis}} - P_{\text{chg}}$ and the thermal
-input $u^{\text{eff}}_k = (P_{\text{chg},j(k)}, P_{\text{dis},j(k)}, \bar{P}_{\text{reg},k})$
-includes the committed reg power so the predicted Joule heating
-accounts for it. Discrete-time:
 
-$$
-(\text{SOC}_{k+1}, T_{k+1}) = F\!\big( (\text{SOC}_k, T_k), \, u^{\text{eff}}_k; \, \overline{\text{soh}} \big)
-$$
+  dSOC                  η_c · P_chg − P_dis / η_d
+  ────  =  ──────────────────────────────────────────
+   dt                       soh̄ · E_nom · 3600
 
-with $F$ one explicit RK4 step at $\Delta t = 60\text{ s}$.
+
+  dT          Q_joule(P_net, T)  −  h_cool · (T − T_amb)
+  ────  =   ─────────────────────────────────────────────
+   dt                          C_thermal
+```
+
+with `P_net = P_dis − P_chg`. The thermal Joule term receives the
+**committed reg power** in addition to the planned chg/dis, so the
+predicted heating accounts for it. `soh̄` is a parameter (not a state)
+and stays constant for the duration of one solve.
+
+**Discrete-time:**
+
+```
+( SOC[k+1], T[k+1] )  =  F(  ( SOC[k], T[k] ),
+                             ( P_chg[j(k)], P_dis[j(k)], P̄_reg[k] );
+                             soh̄ )
+```
+
+with `F` one explicit RK4 step at `Δt = 60 s`.
 
 ### Objective
 
-$$
-\begin{aligned}
-\min \quad &\sum_{k=0}^{N-1} \Big[
-  \underbrace{-\,w_e\,\hat{p}^e_k \big( P_{\text{dis},j(k)} - P_{\text{chg},j(k)} \big) \Delta t_h}_{\text{energy revenue (negated)}}
-  \;+\; \underbrace{w_{\text{deg}}\,c_{\text{deg}}\,\alpha_{\text{deg}}\,\big( P_{\text{chg},j(k)} + P_{\text{dis},j(k)} \big) \Delta t_s}_{\text{arbitrage degradation}}
-  \;+\; \underbrace{Q^{\text{soc}}_{\text{anchor}} \big( \text{SOC}_k - \text{soc}^{\text{ref}}_k \big)^{2}}_{\text{soft EMS SOC anchor}}
-\Big] \\[0.6em]
-&+\; R^{\Delta}_{\text{econ}} \Big( (P_{\text{chg},0} - P^{\text{prev}}_{\text{chg}})^{2} + (P_{\text{dis},0} - P^{\text{prev}}_{\text{dis}})^{2} \Big) \\[0.2em]
-&+\; R^{\Delta}_{\text{econ}} \sum_{k=1}^{N_c - 1} \Big( (P_{\text{chg},k} - P_{\text{chg},k-1})^{2} + (P_{\text{dis},k} - P_{\text{dis},k-1})^{2} \Big) \\[0.4em]
-&+\; Q^{\text{term}}_{\text{econ}} \big( \text{SOC}_N - \text{soc}^{\text{ref}}_N \big)^{2} \\[0.2em]
-&+\; \lambda_{\text{soc}} \sum_{k=0}^{N} \varepsilon_k^{2}
-\;+\; \lambda_{\text{temp}} \sum_{k=0}^{N} (\varepsilon^{\text{temp}}_k)^{2}
-\end{aligned}
-$$
+```
+minimise   Σ over k=0..N−1 of [
+              − w_e · p̂_e[k] · ( P_dis[j(k)] − P_chg[j(k)] ) · Δt_h     ← energy revenue (negated)
+              + w_deg · c_deg · α_deg · ( P_chg[j(k)] + P_dis[j(k)] ) · Δt_s   ← arbitrage degradation
+              + Q_soc_anchor · ( SOC[k] − soc_ref[k] )²                  ← soft EMS SOC anchor
+            ]
+            + R_delta_econ · ( ( P_chg[0]  − P_chg_prev )²              ← rate-of-change at k=0
+                             + ( P_dis[0]  − P_dis_prev )² )
+            + R_delta_econ · Σ over k=1..Nc−1 of [
+                  ( P_chg[k] − P_chg[k−1] )²                            ← rate-of-change inside Nc
+                + ( P_dis[k] − P_dis[k−1] )²
+              ]
+            + Q_term_econ · ( SOC[N] − soc_ref[N] )²                    ← terminal SOC anchor
+            + λ_soc  · Σ over k=0..N of ε[k]²                           ← SOC slack penalty
+            + λ_temp · Σ over k=0..N of ε_temp[k]²                      ← temperature slack penalty
+```
 
-The reg-cycling degradation term $c_{\text{deg}} \alpha_{\text{reg}} \bar{P}_{\text{reg},k}$
-is **constant** with respect to the decision variables (since $\bar{P}_{\text{reg},k}$
+The reg-cycling degradation term `c_deg · α_reg · P̄_reg[k]` is
+**constant** with respect to the decision variables (since `P̄_reg[k]`
 is exogenous), so it has zero gradient and is omitted from the
 objective. The simulator's ledger bills it post-hoc.
 
@@ -108,49 +119,53 @@ objective. The simulator's ledger bills it post-hoc.
 
 **Initial conditions:**
 
-$$
-\text{SOC}_0 = \text{soc}_0, \quad T_0 = \text{temp}_0
-$$
+```
+SOC[0] = soc_0,    T[0] = temp_0
+```
 
 **Dynamics:**
 
-$$
-(\text{SOC}_{k+1}, T_{k+1}) = F\!\big( (\text{SOC}_k, T_k), \, u^{\text{eff}}_k; \, \overline{\text{soh}} \big), \quad k = 0, \dots, N-1
-$$
+```
+( SOC[k+1], T[k+1] )  =  F( ( SOC[k], T[k] ), ( P_chg[j(k)], P_dis[j(k)], P̄_reg[k] ); soh̄ )
+```
+
+for k = 0..N−1.
 
 **SOC bounds (soft):**
 
-$$
-\text{SOC}_{\min} - \varepsilon_k \;\leq\; \text{SOC}_k \;\leq\; \text{SOC}_{\max} + \varepsilon_k, \quad k = 0, \dots, N
-$$
+```
+SOC_min − ε[k]  ≤  SOC[k]  ≤  SOC_max + ε[k]            for k = 0..N
+```
 
 **Temperature bounds (soft):**
 
-$$
-T_{\min} - \varepsilon^{\text{temp}}_k \;\leq\; T_k \;\leq\; T_{\max} + \varepsilon^{\text{temp}}_k, \quad k = 0, \dots, N
-$$
+```
+T_min − ε_temp[k]  ≤  T[k]  ≤  T_max + ε_temp[k]        for k = 0..N
+```
 
 **Power budget (full prediction horizon, post F18 fix):**
 
-$$
-P_{\text{chg},j(k)} + \bar{P}_{\text{reg},k} \;\leq\; P_{\max}, \quad
-P_{\text{dis},j(k)} + \bar{P}_{\text{reg},k} \;\leq\; P_{\max}, \quad k = 0, \dots, N-1
-$$
+```
+P_chg[j(k)] + P̄_reg[k]  ≤  P_max          for k = 0..N−1
+P_dis[j(k)] + P̄_reg[k]  ≤  P_max          for k = 0..N−1
+```
 
-This constraint is enforced over the **full** horizon $k \in [0, N)$,
-not just the unblocked control window $j \in [0, N_c)$, so the held
+This constraint is enforced over the **full** horizon `k ∈ [0, N)`,
+not just the unblocked control window `j ∈ [0, Nc)`, so the held
 control values cannot propagate a physically infeasible plan into the
 blocked region of the prediction.
 
 ### What this MPC does NOT have
 
-- **No $P_{\text{reg}}$ decision variable.** Reg power is exogenous (parameter from the EMS).
+- **No `P_reg` decision variable.** Reg power is exogenous (parameter from the EMS).
 - **No endurance constraint.** Currently differs from `tracking_mpc` in this respect.
 - **No stochasticity.** Single deterministic price horizon (forecast mean), single 2-state trajectory.
 - **No SOH state.** Frozen as a parameter; the slow SOH dynamics are modelled by the EMS, not the MPC.
 - **No V_rc transient states.**
 - **No multi-cell pack model.** Plans against pack-mean SOC.
-- **Per-step SOC anchor uses the end-of-hour reference at all $k$** in the current implementation — see audit finding F33 for the structural issue this creates inside an hour.
+- **Per-step SOC anchor uses the end-of-hour reference at all `k`** in
+  the current implementation — see audit finding F33 for the
+  structural issue this creates inside an hour.
 
 ### Empirical status (post-audit)
 
@@ -160,10 +175,15 @@ day-ahead prices, no intraday or real-time signals), the per-minute
 economic re-optimization layer **does not produce a positive return**
 relative to the EMS-only baseline (`ems_clamps`). Specifically:
 
-- `economic_mpc` loses to `ems_clamps` in 28 of 30 days, by $0.06–0.85$/day.
-- The loss is largest in the **volatile** subset, not the stressed subset, suggesting the failure mode is **horizon myopia**: the 60-min MPC cannot see the full-day arbitrage shape the EMS captures.
-- The MPC's economic term has **zero intra-hour gradient** because $\hat{p}^e_k$ is constant within an hour (day-ahead resolution).
-- Per-minute decisions are therefore driven entirely by the SOC anchor — a tracking signal that does no economic work.
+- `economic_mpc` loses to `ems_clamps` in 28 of 30 days, by
+  \$0.06–\$0.85/day.
+- The loss is largest in the **volatile** subset, not the stressed
+  subset, suggesting the failure mode is **horizon myopia**: the 60-min
+  MPC cannot see the full-day arbitrage shape that the EMS captures.
+- The MPC's economic term has **zero intra-hour gradient** because
+  `p̂_e[k]` is constant within an hour (day-ahead resolution).
+- Per-minute decisions are therefore driven entirely by the SOC anchor
+  — a tracking signal that does no economic work.
 
 This is a **data-pipeline gap**, not (necessarily) an MPC formulation
 bug. The MPC layer would only earn its compute cost if it received
